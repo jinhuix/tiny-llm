@@ -58,6 +58,9 @@ class Qwen3MultiHeadAttention:
         return linear(out, self.wo) # (B, L, hidden_size)
 
 class Qwen3MLP:
+    """
+    SwiGLU FFN:  out = ( SiLU(x · W_gateᵀ) ⊙ (x · W_upᵀ) ) · W_downᵀ
+    """
     def __init__(
         self,
         dim: int,
@@ -66,11 +69,12 @@ class Qwen3MLP:
         w_up: mx.array,
         w_down: mx.array,
     ):
-        pass
+        self.dim = dim
+        self.hidden_dim = hidden_dim
+        self.w_gate, self.w_up, self.w_down = w_gate, w_up, w_down
 
     def __call__(self, x: mx.array) -> mx.array:
-        pass
-
+        return linear(silu(linear(x, self.w_gate)) * linear(x, self.w_up), self.w_down)
 
 class Qwen3TransformerBlock:
     def __init__(

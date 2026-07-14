@@ -17,4 +17,8 @@ def linear(
     return y + bias if bias is not None else y
 
 def silu(x: mx.array) -> mx.array:
-    pass
+    """
+    SiLU(x) = x · σ(x) = x / (1 + exp(-x))
+    """
+    sigmod = 1 / (1 + mx.exp(-mx.abs(x)))   # stable sigmoid
+    return x * mx.where(x < 0, 1 - sigmod, sigmod)
