@@ -1,24 +1,21 @@
 import mlx.core as mx
-from .quantize import QuantizedWeights
+from .basics import linear
 
 
 class Embedding:
+    """
+    weight: (V, E)
+    __call__:   ids (...,)  → vecs (..., E)    # row lookup
+    as_linear:  vecs (..., E) → logits (..., V)  # x @ weightᵀ
+    """
+
     def __init__(self, vocab_size: int, embedding_dim: int, weight: mx.array):
-        pass
+        self.vocab_size = vocab_size
+        self.embedding_dim = embedding_dim
+        self.weight = weight  # (V, E)
 
     def __call__(self, x: mx.array) -> mx.array:
-        pass
+        return self.weight[x]  # (...,) → (..., E)
 
     def as_linear(self, x: mx.array) -> mx.array:
-        pass
-
-
-class QuantizedEmbedding:
-    def __init__(self, vocab_size: int, embedding_dim: int, weight: QuantizedWeights):
-        pass
-
-    def __call__(self, x: mx.array) -> mx.array:
-        pass
-
-    def as_linear(self, x: mx.array) -> mx.array:
-        pass
+        return linear(x, self.weight)  # (..., E) → (..., V)
