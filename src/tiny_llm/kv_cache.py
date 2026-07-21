@@ -52,8 +52,14 @@ class BatchingKvCache(TinyKvCache):
 
 
 class TinyKvFullCache(TinyKvCache):
+    """
+        key / value : (B, H, L', D)
+        stored      : (B, H, L,  D), L grows by L' each call
+        returns     : full (k, v, total_len, mask)
+    """
+
     def __init__(self):
-        self.key_values = None
+        self.key_values: tuple[mx.array, mx.array] | None = None
         self.offset = 0
 
     def update_and_fetch(
@@ -63,4 +69,10 @@ class TinyKvFullCache(TinyKvCache):
         mask_length: int | None = None,
         mask: mx.array | str | None = None,
     ) -> tuple[mx.array, mx.array, int, Optional[mx.array]]:
-        pass
+        if self.key_values is None:
+            self.key_values = (key, value)
+        else:
+            pk, pv = self.key_values
+            self.key_values = (mx.concat([pk, key], axis=2), mx.concat([pv, value], axis=2))
+        self.offset = self.key_values[0].shape[2]
+        return *self.key_values, self.offset, mask

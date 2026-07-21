@@ -32,12 +32,25 @@ class RoPE:
         self.sin_freqs = mx.sin(theta)
 
     def __call__(
-        self, x: mx.array, offset: slice | None = None
+        self, x: mx.array, offset: int | slice | list[int] | list[slice] | None = None
     ) -> mx.array:
         N, S, H, D = x.shape
-        sl = slice(0, S) if offset is None else offset
-        cos = self.cos_freqs[sl].reshape(1, S, 1, self.half_dims)   # (1, S, 1, D/2)
-        sin = self.sin_freqs[sl].reshape(1, S, 1, self.half_dims)
+        if offset is None:
+            offset = slice(0, S)
+        if isinstance(offset, int):
+            offset = slice(offset, offset + S)
+
+        if isinstance(offset, slice):
+            cos = self.cos_freqs[offset].reshape(1, S, 1, self.half_dims)   # (1, S, 1, D/2)
+            sin = self.sin_freqs[offset].reshape(1, S, 1, self.half_dims)
+        else:
+            positions = [
+                range(o.start, o.stop) if isinstance(o, slice) else range(o, o + S)
+                for o in offset
+            ]
+            positions = mx.array([list(p) for p in positions])
+            cos = self.cos_freqs[positions].reshape(N, S, 1, self.half_dims)
+            sin = self.sin_freqs[positions].reshape(N, S, 1, self.half_dims)
         if self.traditional:
             pair = x.reshape(N, S, H, self.half_dims, 2)    # (N, S, H, D/2, 2), pairs: (x0,x1), (x2,x3), (x4,x5), ...
             x1, x2 = pair[..., 0], pair[..., 1]
