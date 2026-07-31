@@ -1,20 +1,52 @@
-# Week 3: Serving
+# 🚧 Week 3: Build a Mini vLLM
 
-In Week 3 of the course, we move from the "tiny vLLM" baseline to the next layer of serving-system ideas. Week 2 gave us the core runtime loop: KV cache, quantized kernels, FlashAttention, chunked prefill, and continuous batching. Week 3 is where we start addressing the limitations of that baseline and connect the model runtime to more realistic serving features.
+> 🚧 This overview and chapters carrying the same marker are under review and
+> may change.
+
+Week 3 turns the optimized single-request model into a multi-request serving
+engine. Students add scheduling, request-owned cache state, shared page pools,
+and the runtime metadata needed to read noncontiguous K/V directly. The final
+model uses one page-aware attention interface with separate schedules for
+one-token decode and multi-token prefill.
+
+As in Week 2, **MLX** names the framework or its production operators, the
+**reference solution** names `tiny_llm_ref`, and **your solution** names the
+code you write in `tiny_llm`.
 
 ## What We’ll Cover
 
-* Paged attention
-    * Part 1: paged KV cache and the page-table abstraction
-    * Part 2: block tables, paged runtime metadata, and the real attention path
-* Additional serving optimizations
-    * MoE routing and serving considerations
-    * speculative decoding
-    * long-context techniques
-* Model interaction with the outside world
-    * retrieval-augmented generation (RAG)
-    * tool calling / agent-style execution
+- Continuous batching and request-slot reuse
+- Chunked prefill and scheduler fairness
+- Paged KV storage and page-walking attention
+- Paged FlashAttention for long prefill
+- Optional speculative decoding over rewindable caches
+- Optional Mixture-of-Experts model support
 
-The goal of Week 3 is not just to make the model faster. It is to understand how a serving system evolves once the basic decode loop already works: how memory is managed, how runtime metadata flows into kernels, and how the serving stack coordinates with external systems.
+The ordering is intentional. Day 1 batches independent request states. Day 2
+splits long prefills so they cannot monopolize the scheduler. Day 3 replaces a
+growing dense cache with fixed-size pages while retaining a dense-gather
+compatibility path. Day 4 removes that gather by teaching attention to walk the
+page table directly with a correctness-first schedule. Day 5 then tiles that
+same page-walking operation with Week 2's matrix fragments. Page translation
+is therefore introduced before it is optimized.
+
+These five days form the required path in your solution. The final model in
+your solution runs paged FlashAttention for long prefill and the paged vector
+kernel for short queries.
+Both schedules read the same page pool through the same block-table interface;
+neither rebuilds dense K/V.
+
+Paged attention is not an automatic single-request latency win. It primarily
+improves serving capacity, cache reuse, and batching; page-table indirection
+can make one request slower. This week measures those tradeoffs rather than
+assuming an algorithm with a production name is automatically fast. Each
+chapter ends with a focused measurement, while the
+[performance appendix](./appendix-performance.md) records the matched
+chapter-by-chapter results.
+
+Speculative decoding follows the paged-attention chapters because rejection
+needs a precise cache rewind operation, and multi-token verification needs the
+page-aware long-query path. MoE is independent of the cache and scheduler, so
+it remains an optional model extension and is not required to complete Week 3.
 
 {{#include copyright.md}}

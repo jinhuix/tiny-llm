@@ -1,12 +1,7 @@
-#include <cmath>
 #include <algorithm>
-#include <cstdint>
-#include <limits>
 #include <stdexcept>
-#include <vector>
+#include <string>
 
-#include "mlx/backend/cpu/encoder.h"
-#include "mlx/utils.h"
 #include "tiny_llm_ext.h"
 
 #ifdef _METAL_
@@ -16,11 +11,76 @@
 
 namespace tiny_llm_ext_ref {
 
+mx::array paged_cache_update(const mx::array &pages, const mx::array &values, int page_id, int start,
+                             mx::StreamOrDevice s) {
+    if ((pages.dtype() != mx::float32 && pages.dtype() != mx::bfloat16) || values.dtype() != pages.dtype()) {
+        throw std::runtime_error("paged_cache_update: pages and values must have the same float32 or bfloat16 dtype");
+    }
+    if (pages.shape().size() != 4 || values.shape().size() != 4 || values.shape()[0] != 1) {
+        throw std::runtime_error(
+            "paged_cache_update: expected pages [P, H, page_size, D] and values [1, H, length, D]");
+    }
+    if (values.shape()[1] != pages.shape()[1] || values.shape()[3] != pages.shape()[3]) {
+        throw std::runtime_error("paged_cache_update: values must match the page head count and head dimension");
+    }
+    if (page_id < 0 || page_id >= pages.shape()[0] || start < 0 || start + values.shape()[2] > pages.shape()[2]) {
+        throw std::runtime_error("paged_cache_update: destination slice is outside page storage");
+    }
+    return mx::array(pages.shape(), pages.dtype(), std::make_shared<PagedCacheUpdate>(to_stream(s), page_id, start),
+                     {pages, values});
+}
+
+void PagedCacheUpdate::eval_cpu(const std::vector<mx::array> &, std::vector<mx::array> &) {
+    throw std::runtime_error("paged_cache_update: the course extension is GPU-only");
+}
+
+#ifdef _METAL_
+void PagedCacheUpdate::eval_gpu(const std::vector<mx::array> &inputs, std::vector<mx::array> &outputs) {
+    const auto &pages = inputs[0];
+    const auto &values = inputs[1];
+    auto &out = outputs[0];
+    if (!pages.flags().row_contiguous || !values.flags().row_contiguous) {
+        throw std::runtime_error("paged_cache_update: pages and values must be contiguous");
+    }
+
+    // Page storage is request state, so the output intentionally aliases the
+    // input buffer. The kernel touches only the appended slice instead of
+    // building a functional copy of the entire cache tensor.
+    out.copy_shared_buffer(pages);
+    auto &d = mx::metal::device(stream().device);
+    auto library = d.get_library("tiny_llm_ext_ref");
+    const char *kernel_name = pages.dtype() == mx::bfloat16 ? "paged_cache_update_bf16" : "paged_cache_update_f32";
+    auto kernel = d.get_kernel(kernel_name, library);
+    auto &compute_encoder = mx::metal::get_command_encoder(stream());
+    compute_encoder.set_compute_pipeline_state(kernel);
+    compute_encoder.set_input_array(values, 0);
+    compute_encoder.set_output_array(out, 1);
+    const int heads = pages.shape()[1];
+    const int length = values.shape()[2];
+    const int head_dim = pages.shape()[3];
+    const int page_size = pages.shape()[2];
+    compute_encoder.set_bytes(heads, 2);
+    compute_encoder.set_bytes(length, 3);
+    compute_encoder.set_bytes(head_dim, 4);
+    compute_encoder.set_bytes(page_size, 5);
+    compute_encoder.set_bytes(page_id_, 6);
+    compute_encoder.set_bytes(start_, 7);
+    const int threads = std::min<int>(kernel->maxTotalThreadsPerThreadgroup(), 256);
+    compute_encoder.dispatch_threads(MTL::Size(values.size(), 1, 1), MTL::Size(threads, 1, 1));
+}
+#else
+void PagedCacheUpdate::eval_gpu(const std::vector<mx::array> &, std::vector<mx::array> &) {
+    throw std::runtime_error("PagedCacheUpdate has no GPU implementation.");
+}
+#endif
+
 mx::array paged_attention(const mx::array &q, const mx::array &key_pages, const mx::array &value_pages,
                           const mx::array &block_table, const mx::array &context_lens, const float scale,
                           const bool is_causal, const int num_kv_heads, const int num_heads, mx::StreamOrDevice s) {
-    if (q.dtype() != mx::float32 || key_pages.dtype() != mx::float32 || value_pages.dtype() != mx::float32) {
-        throw std::runtime_error("paged_attention: q, key_pages, and value_pages must be float32");
+    if ((q.dtype() != mx::float32 && q.dtype() != mx::bfloat16) || key_pages.dtype() != q.dtype() ||
+        value_pages.dtype() != q.dtype()) {
+        throw std::runtime_error(
+            "paged_attention: q, key_pages, and value_pages must have the same float32 or bfloat16 dtype");
     }
     if (block_table.dtype() != mx::int32 || context_lens.dtype() != mx::int32) {
         throw std::runtime_error("paged_attention: block_table and context_lens must be int32");
@@ -56,175 +116,13 @@ mx::array paged_attention(const mx::array &q, const mx::array &key_pages, const 
         throw std::runtime_error("paged_attention: q batch size must match block_table batch size");
     }
 
-    return mx::array(q.shape(), mx::float32,
+    return mx::array(q.shape(), q.dtype(),
                      std::make_shared<PagedAttention>(to_stream(s), scale, is_causal, num_kv_heads, num_heads),
                      {q, key_pages, value_pages, block_table, context_lens});
 }
 
 void PagedAttention::eval_cpu(const std::vector<mx::array> &inputs, std::vector<mx::array> &outputs) {
-    auto &q = inputs[0];
-    auto &key_pages = inputs[1];
-    auto &value_pages = inputs[2];
-    auto &block_table = inputs[3];
-    auto &context_lens = inputs[4];
-    auto &out = outputs[0];
-
-    if (out.dtype() != mx::float32) {
-        throw std::runtime_error("paged_attention: output dtype must be float32");
-    }
-    if (!q.flags().row_contiguous || !key_pages.flags().row_contiguous || !value_pages.flags().row_contiguous ||
-        !block_table.flags().row_contiguous || !context_lens.flags().row_contiguous) {
-        throw std::runtime_error("paged_attention: all inputs must be contiguous");
-    }
-
-    out.set_data(mx::allocator::malloc(out.nbytes()));
-
-    auto &encoder = mx::cpu::get_command_encoder(stream());
-    encoder.set_input_array(q);
-    encoder.set_input_array(key_pages);
-    encoder.set_input_array(value_pages);
-    encoder.set_input_array(block_table);
-    encoder.set_input_array(context_lens);
-    encoder.set_output_array(out);
-
-    encoder.dispatch([out_ptr = out.data<float>(), q = mx::array::unsafe_weak_copy(q),
-                      key_pages = mx::array::unsafe_weak_copy(key_pages),
-                      value_pages = mx::array::unsafe_weak_copy(value_pages),
-                      block_table = mx::array::unsafe_weak_copy(block_table),
-                      context_lens = mx::array::unsafe_weak_copy(context_lens), scale = scale_,
-                      is_causal = is_causal_, num_kv_heads = num_kv_heads_, num_heads = num_heads_]() {
-        const int64_t N = q.shape()[0];
-        const int64_t L = q.shape()[1];
-        const int64_t D = q.shape()[2];
-        const int64_t page_size = key_pages.shape()[2];
-        const int64_t max_pages = block_table.shape()[1];
-        const int64_t q_kv_ratio = num_heads / num_kv_heads;
-
-        const float *q_ptr = q.data<float>();
-        const float *key_ptr = key_pages.data<float>();
-        const float *value_ptr = value_pages.data<float>();
-        const int32_t *block_ptr = block_table.data<int32_t>();
-        const int32_t *lens_ptr = context_lens.data<int32_t>();
-
-        const int64_t Br = 32;
-        const int64_t Bc = 32;
-        const int64_t Tr = (L + Br - 1) / Br;
-        const int64_t S_capacity = max_pages * page_size;
-        const int64_t context_capacity = std::max<int64_t>(S_capacity, 0);
-
-        for (int64_t n = 0; n < N; n++) {
-            const int64_t batch = n / num_heads;
-            const int64_t q_head = n % num_heads;
-            const int64_t kv_head = q_head / q_kv_ratio;
-            const int64_t context_len = lens_ptr[batch];
-            if (context_len <= 0) {
-                std::fill(out_ptr + n * L * D, out_ptr + (n + 1) * L * D, 0.0f);
-                continue;
-            }
-
-            const int64_t context_limit = std::min<int64_t>(context_len, context_capacity);
-            const int64_t Tc = (context_limit + Bc - 1) / Bc;
-            const int64_t causal_offset = context_len - L;
-
-            for (int64_t i = 0; i < Tr; i++) {
-                const int64_t br_upper_bound = std::min<int64_t>(L - i * Br, Br);
-                std::vector<float> q_i(Br * D, 0.0f);
-                for (int64_t a = 0; a < br_upper_bound; a++) {
-                    for (int64_t c = 0; c < D; c++) {
-                        q_i[a * D + c] = q_ptr[n * L * D + (i * Br + a) * D + c];
-                    }
-                }
-
-                std::vector<float> o_i(Br * D, 0.0f);
-                std::vector<float> l_i(Br, 0.0f);
-                std::vector<float> m_i(Br, -std::numeric_limits<float>::infinity());
-
-                for (int64_t j = 0; j < Tc; j++) {
-                    const int64_t col_min = j * Bc;
-                    const int64_t row_max = i * Br + br_upper_bound - 1;
-                    if (is_causal && col_min > row_max + causal_offset) {
-                        continue;
-                    }
-
-                    const int64_t bc_upper_bound = std::min<int64_t>(context_limit - col_min, Bc);
-                    std::vector<float> s_i(Br * Bc, -std::numeric_limits<float>::infinity());
-                    std::vector<char> valid(Br * Bc, 0);
-
-                    for (int64_t b = 0; b < bc_upper_bound; b++) {
-                        const int64_t key_pos = col_min + b;
-                        const int64_t page_idx = key_pos / page_size;
-                        if (page_idx >= max_pages) {
-                            continue;
-                        }
-                        const int64_t page_id = block_ptr[batch * max_pages + page_idx];
-                        if (page_id < 0) {
-                            continue;
-                        }
-                        const int64_t slot = key_pos - page_idx * page_size;
-                        for (int64_t a = 0; a < br_upper_bound; a++) {
-                            if (is_causal && key_pos > i * Br + a + causal_offset) {
-                                continue;
-                            }
-                            float score = 0.0f;
-                            for (int64_t c = 0; c < D; c++) {
-                                const int64_t k_idx = ((page_id * num_kv_heads + kv_head) * page_size + slot) * D + c;
-                                score += q_i[a * D + c] * key_ptr[k_idx];
-                            }
-                            s_i[a * Bc + b] = score * scale;
-                            valid[a * Bc + b] = 1;
-                        }
-                    }
-
-                    for (int64_t a = 0; a < br_upper_bound; a++) {
-                        float rowmax = -std::numeric_limits<float>::infinity();
-                        for (int64_t b = 0; b < bc_upper_bound; b++) {
-                            if (valid[a * Bc + b]) {
-                                rowmax = std::max(rowmax, s_i[a * Bc + b]);
-                            }
-                        }
-                        if (rowmax == -std::numeric_limits<float>::infinity()) {
-                            continue;
-                        }
-
-                        const float new_max = std::max(m_i[a], rowmax);
-                        const float old_scale = std::exp(m_i[a] - new_max);
-                        float rowsum = 0.0f;
-                        for (int64_t b = 0; b < bc_upper_bound; b++) {
-                            if (valid[a * Bc + b]) {
-                                rowsum += std::exp(s_i[a * Bc + b] - new_max);
-                            }
-                        }
-
-                        for (int64_t c = 0; c < D; c++) {
-                            float res = 0.0f;
-                            for (int64_t b = 0; b < bc_upper_bound; b++) {
-                                if (!valid[a * Bc + b]) {
-                                    continue;
-                                }
-                                const int64_t key_pos = col_min + b;
-                                const int64_t page_idx = key_pos / page_size;
-                                const int64_t page_id = block_ptr[batch * max_pages + page_idx];
-                                const int64_t slot = key_pos - page_idx * page_size;
-                                const int64_t v_idx = ((page_id * num_kv_heads + kv_head) * page_size + slot) * D + c;
-                                res += std::exp(s_i[a * Bc + b] - new_max) * value_ptr[v_idx];
-                            }
-                            o_i[a * D + c] = old_scale * o_i[a * D + c] + res;
-                        }
-
-                        l_i[a] = old_scale * l_i[a] + rowsum;
-                        m_i[a] = new_max;
-                    }
-                }
-
-                for (int64_t a = 0; a < br_upper_bound; a++) {
-                    for (int64_t c = 0; c < D; c++) {
-                        const int64_t out_idx = n * L * D + (i * Br + a) * D + c;
-                        out_ptr[out_idx] = l_i[a] > 0.0f ? o_i[a * D + c] / l_i[a] : 0.0f;
-                    }
-                }
-            }
-        }
-    });
+    throw std::runtime_error("paged_attention: the course extension is GPU-only");
 }
 
 #ifdef _METAL_
@@ -236,9 +134,6 @@ void PagedAttention::eval_gpu(const std::vector<mx::array> &inputs, std::vector<
     const auto &context_lens = inputs[4];
     auto &out = outputs[0];
 
-    if (out.dtype() != mx::float32) {
-        throw std::runtime_error("paged_attention: output dtype must be float32");
-    }
     if (!q.flags().row_contiguous || !key_pages.flags().row_contiguous || !value_pages.flags().row_contiguous ||
         !block_table.flags().row_contiguous || !context_lens.flags().row_contiguous) {
         throw std::runtime_error("paged_attention: all inputs must be contiguous");
@@ -249,56 +144,84 @@ void PagedAttention::eval_gpu(const std::vector<mx::array> &inputs, std::vector<
     auto &s = stream();
     auto &d = mx::metal::device(s.device);
     auto library = d.get_library("tiny_llm_ext_ref");
-    auto kernel = d.get_kernel("paged_attention_f32", library);
-
-    auto &compute_encoder = d.get_command_encoder(s.index);
-    compute_encoder.set_compute_pipeline_state(kernel);
-    compute_encoder.set_input_array(q, 0);
-    compute_encoder.set_input_array(key_pages, 1);
-    compute_encoder.set_input_array(value_pages, 2);
-    compute_encoder.set_input_array(block_table, 3);
-    compute_encoder.set_input_array(context_lens, 4);
-    compute_encoder.set_output_array(out, 5);
+    auto &compute_encoder = mx::metal::get_command_encoder(s);
 
     const int N = q.shape()[0];
     const int L = q.shape()[1];
     const int D = q.shape()[2];
     const int page_size = key_pages.shape()[2];
     const int max_pages = block_table.shape()[1];
+    const int is_causal = static_cast<int>(is_causal_);
+    if (D <= 0 || D > 128) {
+        throw std::runtime_error("paged_attention: head dimension must be in the range [1, 128]");
+    }
+
+    auto bind_arrays = [&]() {
+        compute_encoder.set_input_array(q, 0);
+        compute_encoder.set_input_array(key_pages, 1);
+        compute_encoder.set_input_array(value_pages, 2);
+        compute_encoder.set_input_array(block_table, 3);
+        compute_encoder.set_input_array(context_lens, 4);
+        compute_encoder.set_output_array(out, 5);
+    };
+
+    if (L <= 8) {
+        const char *suffix =
+            q.dtype() == mx::bfloat16 && D == 128 ? "bf16_d128" : (q.dtype() == mx::bfloat16 ? "bf16" : "f32");
+        auto kernel = d.get_kernel(std::string("paged_attention_decode_") + suffix, library);
+        compute_encoder.set_compute_pipeline_state(kernel);
+        bind_arrays();
+        compute_encoder.set_bytes(N, 6);
+        compute_encoder.set_bytes(L, 7);
+        compute_encoder.set_bytes(D, 8);
+        compute_encoder.set_bytes(page_size, 9);
+        compute_encoder.set_bytes(max_pages, 10);
+        compute_encoder.set_bytes(is_causal, 11);
+        compute_encoder.set_bytes(num_kv_heads_, 12);
+        compute_encoder.set_bytes(num_heads_, 13);
+        compute_encoder.set_bytes(scale_, 14);
+        constexpr int simdgroups_per_query = 32;
+        compute_encoder.set_threadgroup_memory_length(
+            (simdgroups_per_query * 32 + 2 * simdgroups_per_query) * sizeof(float), 0);
+        compute_encoder.dispatch_threadgroups(MTL::Size(N * L, 1, 1), MTL::Size(simdgroups_per_query * 32, 1, 1));
+        return;
+    }
+
+    if (q.dtype() == mx::bfloat16) {
+        if (D != 128) {
+            throw std::runtime_error("paged_attention: bfloat16 prefill requires head dimension 128");
+        }
+        auto kernel = d.get_kernel("paged_attention_mma_bf16_d128", library);
+        compute_encoder.set_compute_pipeline_state(kernel);
+        bind_arrays();
+        compute_encoder.set_bytes(N, 6);
+        compute_encoder.set_bytes(L, 7);
+        compute_encoder.set_bytes(page_size, 8);
+        compute_encoder.set_bytes(max_pages, 9);
+        compute_encoder.set_bytes(is_causal, 10);
+        compute_encoder.set_bytes(num_kv_heads_, 11);
+        compute_encoder.set_bytes(num_heads_, 12);
+        compute_encoder.set_bytes(scale_, 13);
+        const int batch_size = N / num_heads_;
+        const int query_blocks = (L + 63) / 64;
+        compute_encoder.dispatch_threadgroups(MTL::Size(query_blocks, num_heads_, batch_size), MTL::Size(32, 8, 1));
+        return;
+    }
+
+    auto kernel = d.get_kernel("paged_attention_scalar_f32", library);
+    compute_encoder.set_compute_pipeline_state(kernel);
+    bind_arrays();
     compute_encoder.set_bytes(N, 6);
     compute_encoder.set_bytes(L, 7);
     compute_encoder.set_bytes(D, 8);
     compute_encoder.set_bytes(page_size, 9);
     compute_encoder.set_bytes(max_pages, 10);
-    compute_encoder.set_bytes(static_cast<int>(is_causal_), 11);
+    compute_encoder.set_bytes(is_causal, 11);
     compute_encoder.set_bytes(num_kv_heads_, 12);
     compute_encoder.set_bytes(num_heads_, 13);
     compute_encoder.set_bytes(scale_, 14);
-
-    size_t tgp_size = kernel->maxTotalThreadsPerThreadgroup();
-    size_t simd_width = kernel->threadExecutionWidth();
-
-    const int Br = 32;
-    const int Bc = 32;
-    if (simd_width * Br > tgp_size) {
-        throw std::runtime_error("paged_attention: simd_width * Br must fit in the threadgroup");
-    }
-    if (Bc > simd_width) {
-        throw std::runtime_error("paged_attention: Bc must be less than or equal to simd_width");
-    }
-    if (D > 128) {
-        throw std::runtime_error("paged_attention: head dimension must be less than or equal to 128");
-    }
-
-    const int Tr = (L + Br - 1) / Br;
-    const int Tc = (max_pages * page_size + Bc - 1) / Bc;
-
-    compute_encoder.set_bytes(Br, 15);
-    compute_encoder.set_bytes(Bc, 16);
-    compute_encoder.set_bytes(Tr, 17);
-    compute_encoder.set_bytes(Tc, 18);
-
-    compute_encoder.dispatch_threadgroups(MTL::Size(N, Tr, 1), MTL::Size(Br, simd_width, 1));
+    const int query_blocks = (L + 15) / 16;
+    compute_encoder.dispatch_threadgroups(MTL::Size(N, query_blocks, 1), MTL::Size(32, 16, 1));
 }
 #else
 void PagedAttention::eval_gpu(const std::vector<mx::array> &inputs, std::vector<mx::array> &outputs) {

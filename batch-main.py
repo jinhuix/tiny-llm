@@ -3,6 +3,8 @@ import mlx.core as mx
 import argparse
 import random
 
+from model_names import shortcut_name_to_full_name
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--model", type=str, default="qwen3-0.6b")
 
@@ -40,9 +42,11 @@ parser.add_argument("--device", type=str, default="gpu")
 parser.add_argument("--batch-size", type=int, default=5)
 parser.add_argument("--prefill-step", type=int, default=128)
 parser.add_argument("--max-seq-len", type=int, default=512)
-parser.add_argument("--enable-flash-attn", action="store_true")
 parser.add_argument("--enable-thinking", action="store_true")
 args = parser.parse_args()
+
+if args.device != "gpu":
+    parser.error("The completed Week 2 and Week 3 models require --device gpu")
 
 if args.solution == "tiny_llm":
     print("Using your tiny_llm solution")
@@ -55,15 +59,11 @@ elif args.solution == "tiny_llm_ref" or args.solution == "ref":
 else:
     raise ValueError(f"Solution {args.solution} not supported")
 
-args.model = models.shortcut_name_to_full_name(args.model)
+args.model = shortcut_name_to_full_name(args.model)
 mlx_model, tokenizer = load(args.model)
 
 with mx.stream(mx.gpu if args.device == "gpu" else mx.cpu):
     dispatch_kwargs = {}
-    if args.loader == "week2":
-        dispatch_kwargs["enable_flash_attn"] = args.enable_flash_attn
-    elif args.enable_flash_attn:
-        print("--enable-flash-attn is only used by the week2 loader; ignoring it")
 
     print(
         f"Using {args.loader} loader with thinking={args.enable_thinking} for {args.model}"

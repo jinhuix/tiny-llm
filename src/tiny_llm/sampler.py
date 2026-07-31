@@ -2,7 +2,7 @@ import mlx.core as mx
 import copy
 
 
-def make_sampler(temp: float, top_p: float, top_k: int | None):
+def make_sampler(temp: float, top_p: float | None, top_k: int | None):
     """
     Args:
         temp:  0 = greedy; >0 scales distribution (higher → more random).
@@ -12,6 +12,7 @@ def make_sampler(temp: float, top_p: float, top_k: int | None):
     Returns:
         Callable: logprobs (B, V) → token_ids (B,)
     """
+
     def sample(logprobs: mx.array):
         # Greedy: deterministic argmax
         if temp == 0:

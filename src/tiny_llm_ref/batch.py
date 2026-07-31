@@ -7,7 +7,7 @@ from datetime import datetime
 
 
 def _step(model, y, offsets, kv_cache):
-    logits = model(y, offsets, kv_cache)
+    logits = model(y, offsets, kv_cache, logits_to_keep=1)
     logits = logits[:, -1, :]
     logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
     sampler = lambda x: mx.argmax(x, axis=-1)
@@ -58,9 +58,8 @@ class Request:
 
         # Materialize KV cache after each prefill chunk to truncate the lazy
         # computation graph and prevent memory from growing unboundedly.
-        for i in self.kv_cache:
-            mx.eval(i.key_values[0])
-            mx.eval(i.key_values[1])
+        for layer_cache in self.kv_cache:
+            layer_cache.materialize()
         if self.offset == self.prefill_tokens.size:
             self.is_prefill_done = True
             mx.eval(token)
@@ -107,11 +106,11 @@ def _print_progress(
                 flush=True,
             )
             return
-        precentage = (
+        percentage = (
             pending_prefill_request.offset / pending_prefill_request.prefill_tokens.size
         ) * 100
         print(
-            f"{animation_frame} Prefill [req {pending_prefill_request.prompt_idx}]: {precentage:.2f}% ({pending_prefill_request.prefill_tokens.size - pending_prefill_request.offset} remaining tokens)",
+            f"{animation_frame} Prefill [req {pending_prefill_request.prompt_idx}]: {percentage:.2f}% ({pending_prefill_request.prefill_tokens.size - pending_prefill_request.offset} remaining tokens)",
             flush=True,
         )
     else:

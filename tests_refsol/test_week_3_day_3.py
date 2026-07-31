@@ -1,131 +1,321 @@
+"""Week 3 Day 3 paged-KV storage tests."""
+
 from types import SimpleNamespace
 
 import mlx.core as mx
-import mlx.nn as nn
-from mlx_lm.models.qwen3_moe import (
-    Qwen3MoeSparseMoeBlock as MlxQwen3MoeSparseMoeBlock,
-)
-from mlx_lm.models.switch_layers import SwitchLinear
 
 from .tiny_llm_base import (
-    Moe,
-    QuantizedWeights,
-    grouped_expert_linear,
-    route_topk,
+    FastRMSNorm,
+    FastRoPE,
+    Qwen3ModelWeek2,
+    Qwen3ModelWeek3,
+    TinyKvFullCache,
+    TinyKvPagedCache,
+    TinyKvPagedPool,
 )
 from .utils import assert_allclose
 
 
-def test_task_1_grouped_expert_linear():
-    mx.random.seed(1)
-    scale = 0.25
-    x = mx.random.normal(shape=(2, 3, 128), dtype=mx.float16) * scale
-    w_experts = mx.random.normal(shape=(3, 64, 128), dtype=mx.float16) * scale
-    expert_ids = mx.array(
-        [
-            [2, 0, 1],
-            [1, 2, 0],
-        ],
-        dtype=mx.uint32,
+def _random_chunk(
+    length: int, num_heads: int = 2, head_dim: int = 4
+) -> tuple[mx.array, mx.array]:
+    key = mx.random.normal(shape=(1, num_heads, length, head_dim)).astype(mx.float32)
+    value = mx.random.normal(shape=(1, num_heads, length, head_dim)).astype(mx.float32)
+    return key, value
+
+
+def _quantized_layer(
+    out_dim: int, in_dim: int, group_size: int = 128
+) -> SimpleNamespace:
+    weight = mx.random.normal(shape=(out_dim, in_dim), dtype=mx.bfloat16)
+    quantized_weight, scales, biases = mx.quantize(
+        weight, group_size=group_size, bits=4
     )
-
-    ref = SwitchLinear(
-        input_dims=w_experts.shape[-1],
-        output_dims=w_experts.shape[-2],
-        num_experts=w_experts.shape[0],
-        bias=False,
-    )
-    ref.weight = w_experts
-    ref = ref.to_quantized(group_size=128, bits=4)
-
-    out = grouped_expert_linear(
-        x,
-        QuantizedWeights.from_mlx_layer(ref),
-        expert_ids,
-    )
-    expected = ref(mx.expand_dims(x, -2), expert_ids).squeeze(-2)
-
-    assert out.shape == (2, 3, 64)
-    assert_allclose(out, expected, precision=mx.float16)
-
-
-def test_task_2_router_topk():
-    mx.random.seed(2)
-    scale = 0.25
-    x = mx.random.normal(shape=(2, 2, 128), dtype=mx.float16) * scale
-    ref = nn.Linear(128, 4, bias=False)
-    ref.weight = mx.random.normal(shape=(4, 128), dtype=mx.float16) * scale
-    ref = ref.to_quantized(group_size=128, bits=4)
-
-    router_probs, expert_ids, expert_scores = route_topk(
-        x,
-        QuantizedWeights.from_mlx_layer(ref),
-        top_k=2,
-    )
-    _, _, normalized_scores = route_topk(
-        x,
-        QuantizedWeights.from_mlx_layer(ref),
-        top_k=2,
-        norm_topk_prob=True,
-    )
-
-    expected_probs = mx.softmax(ref(x), axis=-1, precise=True)
-    expected_ids = mx.argpartition(-expected_probs, kth=1, axis=-1)[..., :2]
-    expected_scores = mx.take_along_axis(expected_probs, expected_ids, axis=-1)
-    expected_normalized_scores = expected_scores / expected_scores.sum(
-        axis=-1,
-        keepdims=True,
-    )
-
-    assert router_probs.shape == (2, 2, 4)
-    assert expert_ids.shape == (2, 2, 2)
-    assert expert_scores.shape == (2, 2, 2)
-    assert expert_ids.tolist() == expected_ids.tolist()
-    assert_allclose(router_probs, expected_probs, precision=mx.float16)
-    assert_allclose(expert_scores, expected_scores, precision=mx.float16)
-    assert_allclose(
-        normalized_scores,
-        expected_normalized_scores,
-        precision=mx.float16,
+    return SimpleNamespace(
+        weight=quantized_weight,
+        scales=scales,
+        biases=biases,
+        group_size=group_size,
+        bits=4,
     )
 
 
-def test_task_3_moe():
-    mx.random.seed(3)
-    scale = 0.25
-    x = mx.random.normal(shape=(2, 3, 128), dtype=mx.float16) * scale
-    ref = MlxQwen3MoeSparseMoeBlock(
-        SimpleNamespace(
-            hidden_size=128,
-            moe_intermediate_size=128,
-            num_experts=3,
-            num_experts_per_tok=2,
-            norm_topk_prob=True,
+def _fake_qwen3_mlx_model() -> SimpleNamespace:
+    mx.random.seed(0)
+    args = SimpleNamespace(
+        num_hidden_layers=2,
+        hidden_size=128,
+        vocab_size=128,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=32,
+        intermediate_size=256,
+        rms_norm_eps=1e-5,
+        max_position_embeddings=128,
+        rope_theta=10000,
+        tie_word_embeddings=True,
+    )
+    embed_tokens = _quantized_layer(args.vocab_size, args.hidden_size)
+    kv_hidden_size = args.num_key_value_heads * args.head_dim
+    attn_hidden_size = args.num_attention_heads * args.head_dim
+    layers = []
+    for _ in range(args.num_hidden_layers):
+        layers.append(
+            SimpleNamespace(
+                self_attn=SimpleNamespace(
+                    q_proj=_quantized_layer(attn_hidden_size, args.hidden_size),
+                    k_proj=_quantized_layer(kv_hidden_size, args.hidden_size),
+                    v_proj=_quantized_layer(kv_hidden_size, args.hidden_size),
+                    o_proj=_quantized_layer(args.hidden_size, attn_hidden_size),
+                    q_norm=SimpleNamespace(
+                        weight=mx.ones((args.head_dim,), dtype=mx.bfloat16)
+                    ),
+                    k_norm=SimpleNamespace(
+                        weight=mx.ones((args.head_dim,), dtype=mx.bfloat16)
+                    ),
+                ),
+                mlp=SimpleNamespace(
+                    gate_proj=_quantized_layer(
+                        args.intermediate_size, args.hidden_size
+                    ),
+                    up_proj=_quantized_layer(args.intermediate_size, args.hidden_size),
+                    down_proj=_quantized_layer(
+                        args.hidden_size, args.intermediate_size
+                    ),
+                ),
+                input_layernorm=SimpleNamespace(
+                    weight=mx.ones((args.hidden_size,), dtype=mx.bfloat16)
+                ),
+                post_attention_layernorm=SimpleNamespace(
+                    weight=mx.ones((args.hidden_size,), dtype=mx.bfloat16)
+                ),
+            )
         )
-    )
-    ref.gate.weight = mx.random.normal(shape=(3, 128), dtype=mx.float16) * scale
-    ref.switch_mlp.gate_proj.weight = (
-        mx.random.normal(shape=(3, 128, 128), dtype=mx.float16) * scale
-    )
-    ref.switch_mlp.up_proj.weight = (
-        mx.random.normal(shape=(3, 128, 128), dtype=mx.float16) * scale
-    )
-    ref.switch_mlp.down_proj.weight = (
-        mx.random.normal(shape=(3, 128, 128), dtype=mx.float16) * scale
-    )
-    nn.quantize(ref, group_size=128, bits=4)
-
-    moe = Moe(
-        w_router=QuantizedWeights.from_mlx_layer(ref.gate),
-        w_gate=QuantizedWeights.from_mlx_layer(ref.switch_mlp.gate_proj),
-        w_up=QuantizedWeights.from_mlx_layer(ref.switch_mlp.up_proj),
-        w_down=QuantizedWeights.from_mlx_layer(ref.switch_mlp.down_proj),
-        num_experts_per_tok=2,
-        norm_topk_prob=True,
+    return SimpleNamespace(
+        args=args,
+        model=SimpleNamespace(
+            embed_tokens=embed_tokens,
+            layers=layers,
+            norm=SimpleNamespace(
+                weight=mx.ones((args.hidden_size,), dtype=mx.bfloat16)
+            ),
+        ),
     )
 
-    out = moe(x)
-    expected = ref(x)
 
-    assert out.shape == x.shape
-    assert_allclose(out, expected, precision=mx.float16)
+def test_task_1_paged_cache_matches_full_cache():
+    page_size = 4
+    full = TinyKvFullCache()
+    pool = TinyKvPagedPool(page_size=page_size)
+    paged = TinyKvPagedCache(pool=pool)
+
+    total_len = 0
+    for length in [3, 2, 5]:
+        key, value = _random_chunk(length)
+        full_key, full_value, full_len, _ = full.update_and_fetch(key, value)
+        paged_key, paged_value, paged_len, _ = paged.update_and_fetch(key, value)
+        total_len += length
+        assert full_len == paged_len == total_len
+        assert paged.num_pages == (total_len + page_size - 1) // page_size
+        physical_page_capacity = [
+            paged.pool.read_page(page_id)[0].shape[2] for page_id in paged.page_ids
+        ]
+        assert physical_page_capacity == [page_size] * paged.num_pages
+        assert sum(paged.page_lens) == total_len
+        assert_allclose(paged_key, full_key, precision=mx.float32)
+        assert_allclose(paged_value, full_value, precision=mx.float32)
+
+
+def test_task_1_paged_pool_reuses_freed_pages():
+    pool = TinyKvPagedPool(page_size=4)
+    first = TinyKvPagedCache(pool=pool)
+    second = TinyKvPagedCache(pool=pool)
+
+    key, value = _random_chunk(6)
+    first.update_and_fetch(key, value)
+    assert first.page_ids == [0, 1]
+    assert pool.num_pages == 2
+    assert pool.num_free_pages == 0
+
+    first.release()
+    assert first.offset == 0
+    assert pool.num_pages == 2
+    assert pool.num_free_pages == 2
+
+    second_key, second_value = _random_chunk(5)
+    gathered_key, gathered_value, seq_len, _ = second.update_and_fetch(
+        second_key, second_value
+    )
+    assert seq_len == 5
+    assert pool.num_pages == 2
+    assert pool.num_free_pages == 0
+    assert set(second.page_ids) == {0, 1}
+    assert_allclose(gathered_key, second_key, precision=mx.float32)
+    assert_allclose(gathered_value, second_value, precision=mx.float32)
+
+
+def test_task_1_paged_pool_grows_storage_geometrically():
+    pool = TinyKvPagedPool(page_size=4)
+    cache = TinyKvPagedCache(pool=pool)
+    key, value = _random_chunk(17)
+
+    cache.update_and_fetch_paged(key, value)
+
+    assert pool.num_pages == 5
+    assert pool.capacity == 8
+    assert pool.key_pages.shape[0] == pool.num_pages
+    assert pool.value_pages.shape[0] == pool.num_pages
+    assert pool.storage_growths == 2
+    assert pool.copied_pages_on_growth == 4
+    assert pool.copied_bytes_on_growth == 1024
+
+
+def test_task_1_paged_pool_reset_removes_warmup_capacity_and_counters():
+    pool = TinyKvPagedPool(page_size=4)
+    cache = TinyKvPagedCache(pool=pool)
+    cache.update_and_fetch_paged(*_random_chunk(17))
+    cache.release()
+
+    assert pool.capacity == 8
+    assert pool.num_free_pages == 5
+    pool.reset()
+
+    assert pool.capacity == 0
+    assert pool.num_pages == 0
+    assert pool.num_free_pages == 0
+    assert pool.storage_nbytes == 0
+    assert pool.storage_growths == 0
+    assert pool.copied_pages_on_growth == 0
+    assert pool.copied_bytes_on_growth == 0
+
+
+def test_task_1_reuses_block_table_until_page_ids_change():
+    cache = TinyKvPagedCache(pool=TinyKvPagedPool(page_size=4))
+    cache.update_and_fetch_paged(*_random_chunk(3))
+
+    first = cache.block_table()
+    assert cache.block_table() is first
+
+    # Filling the same tail page changes only context_lens.
+    cache.update_and_fetch_paged(*_random_chunk(1))
+    assert cache.block_table() is first
+
+    # Allocating a new physical page changes the table and invalidates it.
+    cache.update_and_fetch_paged(*_random_chunk(1))
+    assert cache.block_table() is not first
+
+
+def test_task_1_materializes_page_storage_without_dense_gather(monkeypatch):
+    pool = TinyKvPagedPool(page_size=4)
+    cache = TinyKvPagedCache(pool=pool)
+    cache.update_and_fetch_paged(*_random_chunk(5))
+
+    def fail_dense_gather():
+        raise AssertionError("materializing paged storage must not gather dense K/V")
+
+    eval_calls = []
+    cache.gather_dense = fail_dense_gather
+    monkeypatch.setattr(mx, "eval", lambda *arrays: eval_calls.append(arrays))
+
+    cache.materialize()
+
+    assert len(eval_calls) == 1
+    key_pages, value_pages = eval_calls[0]
+    assert key_pages.shape == pool.key_pages.shape
+    assert value_pages.shape == pool.value_pages.shape
+
+
+def test_task_1_paged_cache_rewind():
+    page_size = 4
+    pool = TinyKvPagedPool(page_size=page_size)
+    paged = TinyKvPagedCache(pool=pool)
+    full = TinyKvFullCache()
+
+    for length in [4, 3, 2]:
+        key, value = _random_chunk(length)
+        paged.update_and_fetch(key, value)
+        full.update_and_fetch(key, value)
+
+    assert paged.page_lens == [4, 4, 1]
+    paged.rewind(3)
+    full.rewind(3)
+
+    paged_key, paged_value = paged.gather_dense()
+    full_key, full_value = full.key_values
+    assert paged.offset == full.offset == 6
+    assert paged.page_lens == [4, 2]
+    assert paged.num_pages == 2
+    assert paged.pool.num_pages == 3
+    assert paged.pool.num_free_pages == 1
+    physical_page_capacity = [
+        paged.pool.read_page(page_id)[0].shape[2] for page_id in paged.page_ids
+    ]
+    assert physical_page_capacity == [page_size] * paged.num_pages
+    assert_allclose(paged_key, full_key, precision=mx.float32)
+    assert_allclose(paged_value, full_value, precision=mx.float32)
+
+
+def test_task_1_model_kv_caches_share_storage_within_each_layer():
+    mlx_model = _fake_qwen3_mlx_model()
+    week3_model = Qwen3ModelWeek3(mlx_model, page_size=4, enable_paged_attention=False)
+    first_request_cache = week3_model.create_kv_cache()
+    second_request_cache = week3_model.create_kv_cache()
+
+    assert len(first_request_cache) == week3_model.num_hidden_layers
+    for layer in range(week3_model.num_hidden_layers):
+        assert first_request_cache[layer].pool is week3_model.page_pools[layer]
+        assert second_request_cache[layer].pool is week3_model.page_pools[layer]
+
+    assert first_request_cache[0].page_ids is not first_request_cache[1].page_ids
+    assert first_request_cache[0].page_lens is not first_request_cache[1].page_lens
+    assert first_request_cache[0].pool is not first_request_cache[1].pool
+
+
+def test_task_1_model_layer_caches_keep_independent_page_metadata():
+    mlx_model = _fake_qwen3_mlx_model()
+    week3_model = Qwen3ModelWeek3(mlx_model, page_size=4, enable_paged_attention=False)
+    cache = week3_model.create_kv_cache()
+    inputs = mx.array([[1, 5, 7, 3, 9]], dtype=mx.int32)
+
+    week3_model(inputs, 0, cache)
+
+    assert cache[0].page_ids == [0, 1]
+    assert cache[0].page_lens == [4, 1]
+    for layer in range(1, week3_model.num_hidden_layers):
+        assert cache[layer].page_lens == cache[0].page_lens
+        assert cache[layer].page_ids == cache[0].page_ids
+        for page_id in cache[layer].page_ids:
+            key_page, value_page = week3_model.page_pools[layer].read_page(page_id)
+            assert key_page.shape[2] == week3_model.page_size
+            assert value_page.shape[2] == week3_model.page_size
+
+
+def test_task_3_week3_model_reuses_week2_fast_kernels():
+    week3_model = Qwen3ModelWeek3(
+        _fake_qwen3_mlx_model(), page_size=4, enable_paged_attention=False
+    )
+    for layer in week3_model.layers_inner:
+        assert isinstance(layer.input_layernorm, FastRMSNorm)
+        assert isinstance(layer.post_attention_layernorm, FastRMSNorm)
+        assert isinstance(layer.self_attn.q_norm, FastRMSNorm)
+        assert isinstance(layer.self_attn.k_norm, FastRMSNorm)
+        assert isinstance(layer.self_attn.rope, FastRoPE)
+
+
+def test_task_3_incremental_decode_matches_week2():
+    mlx_model = _fake_qwen3_mlx_model()
+    week2_model = Qwen3ModelWeek2(mlx_model)
+    week3_model = Qwen3ModelWeek3(mlx_model, page_size=4, enable_paged_attention=False)
+    inputs = mx.array([[1, 5, 7, 3, 9, 11]], dtype=mx.int32)
+    week2_cache = week2_model.create_kv_cache()
+    week3_cache = week3_model.create_kv_cache()
+
+    for offset in range(inputs.shape[1]):
+        token = inputs[:, offset : offset + 1]
+        week2_out = week2_model(token, offset, week2_cache)
+        week3_out = week3_model(token, offset, week3_cache)
+        week2_out = week2_out - mx.logsumexp(week2_out, keepdims=True)
+        week3_out = week3_out - mx.logsumexp(week3_out, keepdims=True)
+        assert_allclose(
+            week3_out, week2_out, precision=mx.bfloat16, rtol=1e-3, atol=1e-3
+        )

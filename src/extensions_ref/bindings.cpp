@@ -11,10 +11,11 @@ using namespace nb::literals;
 NB_MODULE(_ext, m) {
     m.doc() = "tiny-llm extensions for MLX";
 
-    m.def("load_library", &tiny_llm_ext_ref::load_library, "device"_a, "path"_a);
+    m.def("load_library", &tiny_llm_ext_ref::load_library, "path"_a);
 
     m.def("quantized_matmul", &tiny_llm_ext_ref::quantized_matmul, "scales"_a, "biases"_a, "group_size"_a, "bits"_a,
-          "a"_a, "b"_a, "transpose_b"_a = false, "stream"_a = nb::none(),
+          "a"_a, "b"_a, "transpose_b"_a = false, "use_simdgroup"_a = true, "use_split_k"_a = false,
+          "stream"_a = nb::none(),
           R"(
         Quantized matmul layer
 
@@ -30,23 +31,17 @@ NB_MODULE(_ext, m) {
         Returns:
             array: ``a * b``
       )");
+    m.def("quantized_embedding", &tiny_llm_ext_ref::quantized_embedding, "indices"_a, "scales"_a, "biases"_a,
+          "weight"_a, "group_size"_a, "bits"_a, "stream"_a = nb::none());
+    m.def("rms_norm", &tiny_llm_ext_ref::rms_norm, "x"_a, "weight"_a, "eps"_a, "stream"_a = nb::none());
+    m.def("rope", &tiny_llm_ext_ref::rope, "x"_a, "offsets"_a, "dims"_a, "base"_a, "traditional"_a = false,
+          "stream"_a = nb::none());
+    m.def("swiglu", &tiny_llm_ext_ref::swiglu, "gate"_a, "up"_a, "stream"_a = nb::none());
+    m.def("decode_attention", &tiny_llm_ext_ref::decode_attention, "query"_a, "key"_a, "value"_a, "mask"_a, "scale"_a,
+          "is_causal"_a, "has_mask"_a, "num_heads"_a, "num_kv_heads"_a, "stream"_a = nb::none());
 
-    m.def("flash_attention", &tiny_llm_ext_ref::flash_attention, "query"_a, "key"_a, "value"_a, "mask"_a, "scale"_a = 1.0,
-          "is_causal"_a = false, "num_kv_heads"_a, "num_heads"_a, "stream"_a = nb::none(), R"(
-        Flash attention layer
-
-        Args:
-            query (array): Query array.
-            key (array): Key array.
-            value (array): Value array.
-            mask (array): Mask array.
-            scale (float): Scaling factor.
-            is_causal (bool): Enable causal-mask fast path.
-
-        Returns:
-            array: ``softmax(query @ key.T * scale) @ value``
-      )");
-
+    m.def("paged_cache_update", &tiny_llm_ext_ref::paged_cache_update, "pages"_a, "values"_a, "page_id"_a, "start"_a,
+          "stream"_a = nb::none());
     m.def("paged_attention", &tiny_llm_ext_ref::paged_attention, "query"_a, "key_pages"_a, "value_pages"_a,
           "block_table"_a, "context_lens"_a, "scale"_a = 1.0, "is_causal"_a = false, "num_kv_heads"_a, "num_heads"_a,
           "stream"_a = nb::none(), R"(
@@ -60,6 +55,9 @@ NB_MODULE(_ext, m) {
             context_lens (array): Valid context length for each request.
             scale (float): Scaling factor.
             is_causal (bool): Enable causal masking.
+
+        Q, K, V, and output preserve bfloat16 on the optimized GPU paths.
+        Scores and online-softmax accumulation use float32.
 
         Returns:
             array: ``softmax(query @ paged_key.T * scale) @ paged_value``

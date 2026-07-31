@@ -90,11 +90,14 @@ def scaled_dot_product_attention_grouped(
 
     return mx.matmul(softmax(scores, axis=-1), v).reshape(shape)    # (*B, H_q, L, D)
 
-def flash_attention(
+def paged_attention(
     query: mx.array,
-    key: mx.array,
-    value: mx.array,
+    key_pages: mx.array,
+    value_pages: mx.array,
+    block_table: mx.array,
+    context_lens: mx.array,
+    page_size: int,
     scale: float | None = None,
-    mask: mx.array | None = None,
+    mask: mx.array | str | None = None,
 ) -> mx.array:
     pass

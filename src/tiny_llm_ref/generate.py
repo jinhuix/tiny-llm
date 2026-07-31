@@ -16,7 +16,7 @@ def simple_generate(
     tokenizer: TokenizerWrapper,
     prompt: str,
     sampler: Callable[[mx.array], mx.array] | None,
-) -> str:
+) -> None:
     def _step(model, y):
         logits = model(y[None])
         logits = logits[:, -1, :]
@@ -50,7 +50,7 @@ def simple_generate_with_kv_cache(
     kv_cache = model.create_kv_cache()
 
     def _step(model, y, offset, kv_cache):
-        logits = model(y[None], offset, kv_cache)
+        logits = model(y[None], offset, kv_cache, logits_to_keep=1)
         logits = logits[:, -1, :]
         logprobs = logits - mx.logsumexp(logits, keepdims=True)
         sampler = lambda x: mx.argmax(x, axis=-1)
@@ -90,7 +90,7 @@ def speculative_generate(
     kv_cache = model.create_kv_cache()
 
     def _step(model, y, offset, kv_cache, n_tokens=1):
-        logits = model(y[None], offset, kv_cache)
+        logits = model(y[None], offset, kv_cache, logits_to_keep=n_tokens)
         if n_tokens > 1:
             logits = logits[:, -n_tokens:, :]
         else:

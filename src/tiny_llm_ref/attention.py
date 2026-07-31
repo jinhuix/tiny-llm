@@ -87,14 +87,23 @@ def paged_attention(
     if mask is not None and mask != "causal":
         raise NotImplementedError
 
-    factor = mx.rsqrt(query.shape[-1]) if scale is None else mx.array(scale)
+    factor = query.shape[-1] ** -0.5 if scale is None else float(scale)
     B, H_q, L, D = query.shape
-    _, H, _, _ = key_pages.shape
+    _, H, stored_page_size, _ = key_pages.shape
     assert H_q % H == 0
+    if stored_page_size != page_size:
+        raise ValueError(
+            f"page_size={page_size} does not match page storage {stored_page_size}"
+        )
 
-    query = mx.contiguous(query.astype(mx.float32).reshape(B * H_q, L, D))
-    key_pages = mx.contiguous(key_pages.astype(mx.float32))
-    value_pages = mx.contiguous(value_pages.astype(mx.float32))
+    if query.dtype != key_pages.dtype or query.dtype != value_pages.dtype:
+        raise ValueError("query, key pages, and value pages must have the same dtype")
+    if query.dtype not in (mx.float32, mx.bfloat16):
+        raise ValueError("paged attention supports float32 or bfloat16 inputs")
+
+    query = mx.contiguous(query.reshape(B * H_q, L, D))
+    key_pages = mx.contiguous(key_pages)
+    value_pages = mx.contiguous(value_pages)
     block_table = mx.contiguous(block_table.astype(mx.int32))
     context_lens = mx.contiguous(context_lens.astype(mx.int32))
     is_causal = mask == "causal"
@@ -105,53 +114,12 @@ def paged_attention(
         value_pages,
         block_table,
         context_lens,
-        float(factor),
+        factor,
         is_causal=is_causal,
         num_kv_heads=H,
         num_heads=H_q,
     )
     return mx.contiguous(result.reshape(B, H_q, L, D))
-
-
-def flash_attention(
-    query: mx.array,
-    key: mx.array,
-    value: mx.array,
-    scale: float | None = None,
-    mask: mx.array | str | None = None,
-) -> mx.array:
-    factor = mx.rsqrt(query.shape[-1]) if scale is None else mx.array(scale)
-    factor = factor.astype(query.dtype)
-
-    *B, H_q, L, E = query.shape
-    _, H, S, _ = key.shape
-    assert H_q % H == 0
-    query = query.reshape(-1, L, E)
-    key = key.reshape(-1, S, E)
-    value = value.reshape(-1, S, E)
-    query = mx.contiguous(query)
-    key = mx.contiguous(key)
-    value = mx.contiguous(value)
-    is_causal = mask == "causal"
-    N = query.shape[0]
-    if is_causal:
-        mask = mx.broadcast_to(causal_mask(L, S, mx.float32), (*B, H_q, L, S))
-    elif mask is None:
-        mask = mx.broadcast_to(mx.zeros((L, S), dtype=mx.float32), (*B, H_q, L, S))
-    else:
-        mask = mx.broadcast_to(mask, (*B, H_q, L, S))
-    mask = mx.contiguous(mask.reshape(N, L, S)).astype(mx.float32)
-    result = tiny_llm_ext_ref.flash_attention(
-        query,
-        key,
-        value,
-        mask,
-        factor,
-        is_causal=is_causal,
-        num_heads=H_q,
-        num_kv_heads=H,
-    )
-    return mx.contiguous(result.reshape(*B, H_q, L, E))
 
 
 class SimpleMultiHeadAttention:
