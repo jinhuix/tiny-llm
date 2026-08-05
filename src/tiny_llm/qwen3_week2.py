@@ -1,3 +1,18 @@
+"""
+Shape notation used throughout this package:
+    B     = batch size
+    L     = sequence length
+    D_in  = input feature dimension of a linear layer
+    D_out = output feature dimension of a linear layer
+    G     = quantization group size (128 for the course Qwen3 weights)
+    P     = packed values per uint32 (8 values when bits=4)
+
+For a dense linear weight W(D_out, D_in), its quantized representation is:
+    weight  (D_out, D_in/P) uint32
+    scales  (D_out, D_in/G) BF16
+    biases  (D_out, D_in/G) BF16
+"""
+
 from typing import Any
 
 import mlx.core as mx
@@ -250,10 +265,12 @@ class Qwen3ModelWeek2:
         self.vocab_size = args.vocab_size
 
         def model_weight(layer: Any) -> mx.array | QuantizedWeights:
+            """Load one W(D_out, D_in) in the format required by checkpoint."""
             if use_quantized_weights:
                 return QuantizedWeights.from_mlx_layer(
                     layer,
                     use_simdgroup_matmul=use_simdgroup_matmul,
+                    use_simdgroup_matvec=True,
                     use_split_k_matmul=use_split_k_matmul,
                 )
             return dequantize_linear(layer)
