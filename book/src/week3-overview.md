@@ -9,9 +9,6 @@ and the runtime metadata needed to read noncontiguous K/V directly. The final
 model uses one page-aware attention interface with separate schedules for
 one-token decode and multi-token prefill.
 
-As in Week 2, **MLX** names the framework or its production operators, the
-**reference solution** names `tiny_llm_ref`, and **your solution** names the
-code you write in `tiny_llm`.
 
 ## What We’ll Cover
 
@@ -22,7 +19,7 @@ code you write in `tiny_llm`.
 - Optional speculative decoding over rewindable caches
 - Optional Mixture-of-Experts model support
 
-The ordering is intentional. Day 1 batches independent request states. Day 2
+Day 1 batches independent request states. Day 2
 splits long prefills so they cannot monopolize the scheduler. Day 3 replaces a
 growing dense cache with fixed-size pages while retaining a dense-gather
 compatibility path. Day 4 removes that gather by teaching attention to walk the
@@ -36,11 +33,11 @@ kernel for short queries.
 Both schedules read the same page pool through the same block-table interface;
 neither rebuilds dense K/V.
 
-Paged attention is not an automatic single-request latency win. It primarily
-improves serving capacity, cache reuse, and batching; page-table indirection
-can make one request slower. This week measures those tradeoffs rather than
-assuming an algorithm with a production name is automatically fast. Each
-chapter ends with a focused measurement, while the
+Paged attention is not an automatic single-request latency win. The checked
+trace measures lower KV storage, page reuse, incremental growth, and batching;
+page-table indirection can make one request slower. It does not establish an
+admission-capacity gain without a memory-capped sweep. Each chapter ends with a
+focused measurement, while the
 [performance appendix](./appendix-performance.md) records the matched
 chapter-by-chapter results.
 

@@ -17,7 +17,7 @@ students to relearn its memory schedule around page translation.
 
 This chapter combines four prerequisites:
 
-- Week 2 Day 4 introduced the online-softmax recurrence.
+- Week 2 Day 5 introduced the online-softmax recurrence.
 - Week 2 Day 6 introduced the cooperative 32×32 tile built from BF16 8×8
   SIMD-matrix fragments.
 - Week 3 Day 3 introduced physical pages and block tables.
@@ -70,6 +70,11 @@ workload-specific GPU schedules.
 
 ## Task 1: Tile Queries and Paged K/V
 
+Begin `paged_attention_mma_bf16_d128` in
+`src/extensions/src/paged_attention.metal`. Keep
+`paged_attention_decode` and `paged_attention_scalar_f32` from Day 4 unchanged;
+they remain the short-query and generic controls.
+
 Use eight SIMD groups to cover a 64-row query block. Each SIMD group owns eight
 query rows and represents matrix operands as 8×8 fragments. Stage 32 logical
 K/V positions per iteration.
@@ -101,6 +106,10 @@ partially full, and physical page ids need not be consecutive.
 
 ## Task 2: Compute Tiled Online Softmax
 
+Continue modifying `paged_attention_mma_bf16_d128` in
+`src/extensions/src/paged_attention.metal`. This task fills the tiled
+online-softmax body; it does not add another public function.
+
 For each query tile, maintain one running maximum, one running sum, and an
 unnormalized output accumulator per row. For each K/V tile:
 
@@ -131,7 +140,13 @@ optimization.
 
 ## Task 3: Validate the Page Boundary
 
-Use the GPU-debugging ladder from Week 2 Day 2:
+Complete the long-query selection in `PagedAttention::eval_gpu` in
+`src/extensions/src/paged_attention.cpp`, then test
+`paged_attention_mma_bf16_d128` against the Day 4 kernels. Keep
+`tiny_llm_ext::paged_attention` and the Python `paged_attention` signature
+unchanged.
+
+Use the GPU-debugging ladder from Week 2 Day 3:
 
 1. compare Day 4 page-walking attention with the readable equation written
    with `mlx.core`;
@@ -157,6 +172,10 @@ pdm run test --week 3 --day 5
 
 ## Task 4: Integrate and Measure
 
+Verify the existing dispatch in `Qwen3MultiHeadAttention.__call__` and the
+shape selection inside `PagedAttention::eval_gpu`. Task 4 adds no new
+extension function.
+
 The Week 3 model should use the tiled paged path automatically for supported
 long prefills. Short queries continue through the vector paged-decode schedule.
 Neither path gathers a dense K/V tensor.
@@ -166,14 +185,23 @@ range, page size, batch size, hardware, prefill throughput, decode throughput,
 request throughput, peak KV storage, and logical KV copy volume:
 
 ```bash
-pdm run bench-serving-progression --offline --repeats 3 \
+pdm run bench-serving-progression --offline --repeats 4 \
   --model qwen3-4b --num-seqs 16 --batch-size 4 \
   --min-input-len 128 --max-input-len 1024 \
-  --min-output-len 32 --max-output-len 128 --prefill-step 128
+  --min-output-len 32 --max-output-len 128 --prefill-step 128 \
+  --warmup 1 --cooldown-seconds 1 \
+  --json-output benchmark_results/m4-pro-qwen3-4b-week3-serving-mlx-0.32.0.json
 ```
 
 FlashAttention is expected to matter more as prefill grows. It should not
 replace the Day 4 decode schedule: a one-token query has no query-tile reuse.
+
+On the checked M4 Pro trace, the complete direct-paged path reaches 679.56
+prefill tok/s, 41.88 output tok/s, 82.11 decode tok/s, and 0.558 requests/s.
+Relative to dense serving on the same trace, output and request throughput are
+28.7% higher, decode throughput is 62.8% higher, and peak KV storage is 47.4%
+lower. These are cumulative Week 3 path results; the serving trace does not
+isolate the Day 5 prefill schedule from paging, direct decode, or scheduling.
 
 Use a separate 8K static sweep as a kernel diagnostic after the serving trace.
 It shows when query tiling begins to offset page-table overhead, but it does not
@@ -181,5 +209,23 @@ measure request turnover, page reuse, or capacity. The
 [performance appendix](./appendix-performance.md) records the matched serving
 and long-context measurements. Long-context decode remains a Day 4 vector
 kernel workload; do not credit a prefill schedule with a decode gain.
+
+```bash
+pdm run bench-course-progression --offline --suite course \
+  --variant week2 --variant week3 --variant mlx --model qwen3-4b \
+  --input-len 8192 --output-len 2 --prefill-logits last \
+  --warmup 1 --repeats 4 --cooldown-seconds 1 \
+  --json-output benchmark_results/m4-pro-qwen3-4b-week3-8k-mlx-0.32.0.json
+```
+
+| 8K static checkpoint | Prefill tok/s | Decode tok/s |
+|---|---:|---:|
+| Week 2 | 323.26 | 17.62 |
+| Complete Week 3 | 424.14 | 24.96 |
+| MLX | 594.21 | 25.24 |
+
+The complete Week 3 prefill path is 31.2% faster than Week 2 and reaches 71.4%
+of MLX at this shape. Its decode row is the Day 4 vector schedule, not evidence
+for the tiled prefill kernel.
 
 {{#include copyright.md}}

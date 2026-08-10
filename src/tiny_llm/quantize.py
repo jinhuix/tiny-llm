@@ -80,6 +80,7 @@ def quantized_matmul(
         mx.contiguous(b),
         transpose_b,
         use_simdgroup,
+        use_split_k,
     )                               # (M, D_out)
     return result.reshape(*B, -1)   # (..., D_out)
 

@@ -1,20 +1,24 @@
 # 🚧 Week 2 Day 6: SIMD-Matrix Prefill
 
-> 🚧 This chapter is under review and may change.
+> **Status: Experimental.** See the
+> [Week 2 verification matrix](./week2-overview.md#verification-status) for
+> what is continuously tested, locally measured, and still under review.
 
-Day 5 ends by switching the profile from one-token decode to multi-token
-prefill. The measured bottleneck changes with the workload: pointwise kernels
-no longer dominate, and the Day 3 matrix-vector schedule does not reuse packed
-weights efficiently across prompt rows. Quantized projections are now the
-largest cost, so today we build a separate matrix schedule for them.
+Day 5 ends by switching the benchmark from one-token decode to multi-token
+prefill. Its source trace shows that the 128-token prefill still uses Day 3's
+correctness-first vanilla quantized matrix path for `M > 8`. Day 6 replaces that
+inherited multi-row schedule, then measures the complete model and the real
+projection shapes to decide whether the new path stays.
 
-Re-run the dependency-aware kernel profile from Day 2 with
-`--case swiglu:prefill:128`. Continue only when projections dominate the
-attribution and the complete-model prefill phase moves with their latency. The
-[reference-solution profile](./appendix-performance.md#the-kernel-profile-that-selects-each-chapter)
-shows that evidence chain. MLX remains an external performance denominator;
-the required path in your solution continues to call the C++/Metal primitive
-you implement for every projection.
+MLX remains an external performance denominator; the SIMD-matrix path in your
+solution continues to call the C++/Metal primitive you implement for every
+projection.
+
+> **Optional profiling evidence.** The checked dependency-aware attribution and
+> the
+> [reference-solution attribution](./appendix-performance.md#checked-operator-attribution-that-selects-each-chapter)
+> explain why projections are the reference solution's next target. They are not
+> required learner output and do not gate this chapter.
 
 The implementation remains deliberately narrow:
 
@@ -27,9 +31,10 @@ The implementation remains deliberately narrow:
 ## From a Matvec to a Cooperative Tile
 
 The vanilla one-thread dot product and a single-group 8×8 tile are useful
-correctness oracles, but neither provides enough cooperative reuse for
-multi-row prefill. The performance schedule must share both activations and
-dequantized weights across a larger result tile.
+Metal bring-up controls, but neither provides enough cooperative reuse for
+multi-row prefill. Compare both with the Python MLX correctness oracle. The
+performance schedule must share both activations and dequantized weights across
+a larger result tile.
 
 The optimized kernel assigns four SIMD groups, or 128 threads, to one
 32×32×32 tile:
@@ -65,6 +70,12 @@ it does not call MLX's quantized-matmul operator.
 
 ## Task 1: Preserve the Workload Dispatch
 
+Modify `QuantizedMatmul::eval_gpu` in
+`src/extensions/src/quantized_matmul.cpp` and
+`quantized_matmul_simdgroup_w4a16_g128` in
+`src/extensions/src/quantized_matmul.metal`. Keep the Day 3
+`quantized_matvec_x4_fast_w4a16_g128` function intact for `M <= 8`.
+
 Keep the Day 3 decode schedule and add the matrix schedule behind the same
 quantized-linear interface:
 
@@ -79,13 +90,21 @@ column tiles. The result must retain the model-facing 16-bit dtype.
 
 ## Task 2: Make Device Loads Contiguous
 
+Continue modifying `quantized_matmul_simdgroup_w4a16_g128` (and its private
+Metal helper, if you factor one) in
+`src/extensions/src/quantized_matmul.metal`; do not change the public
+`quantized_matmul` binding.
+
 Use a cooperative block loader so adjacent threads and each thread's local
 reads form contiguous transactions. This is a requirement of the schedule,
-not a cosmetic detail: fragment arithmetic cannot compensate for scalar,
-strided tile loads. Benchmark Q, K/V, gate/up, and down projections separately
+not a cosmetic detail. Benchmark Q, K/V, gate/up, and down projections separately
 at their Qwen3-4B dimensions so both wide and narrow output grids are covered.
 
 ## Task 3: Hoist Quantization Parameters
+
+Continue modifying `quantized_matmul_simdgroup_w4a16_g128` in
+`src/extensions/src/quantized_matmul.metal`. This task changes the tiled
+kernel's load/reuse strategy, not its C++ or Python signature.
 
 One scale and bias apply to 128 reduction values. Loading them for every
 32-value tile repeats the same device access four times. Have one thread load
@@ -96,26 +115,34 @@ four reduction tiles.
 Keep the scale, bias, and unpacked operands in BF16 storage, while the matrix
 accumulator remains FP32. Cast once when writing the final model output.
 
-## Task 4: Remove Non-Matmul Prefill Waste
+## Task 4: Project Only Required Logits
 
-Two smaller fixes belong in this checkpoint because the prefill profile shows
-them adjacent to the projection work:
+Modify `Qwen3ModelWeek2.__call__` in `src/tiny_llm/qwen3_week2.py` so
+`logits_to_keep=1` slices before the vocabulary projection. Do not add a new
+extension function for this model-level optimization.
 
-- fuse token lookup and W4A16 dequantization in a direct embedding kernel;
-- accept `logits_to_keep=1` and apply the vocabulary projection only to the
-  final prompt row during generation.
-
-The benchmark applies the same last-logit workload to MLX. Prompt-scoring
+Generation needs only the final prompt row to produce the first sampled token.
+Accept `logits_to_keep=1` and apply the vocabulary projection only to that row.
+The benchmark applies the same last-logit workload to MLX, while prompt-scoring
 callers can still request every logit row.
 
 ## Task 5: Verify, Benchmark, and Name the Next Bottleneck
+
+Task 5 adds no function. Verify the cumulative
+`QuantizedMatmul::eval_gpu`/`quantized_matmul_simdgroup_w4a16_g128` path and
+the `Qwen3ModelWeek2.__call__` projection boundary from Tasks 1-4.
 
 ```bash
 pdm run build-ext
 pdm run test --week 2 --day 6
 
-pdm run bench-week2-progression --offline --repeats 3 \
-  --variant week2-simd-matmul --variant mlx \
+pdm run bench-week2-progression --offline --solution tiny_llm --repeats 4 \
+  --variant week2-decode-attention --variant week2-simd-matmul --variant mlx \
+  --model qwen3-4b --input-len 128 --output-len 129 --warmup 2 \
+  --prefill-logits last
+
+pdm run bench-week2-progression --offline --solution tiny_llm --repeats 4 \
+  --variant week2-decode-attention --variant week2-simd-matmul --variant mlx \
   --model qwen3-4b --input-len 32 --output-len 33 --warmup 2 \
   --prefill-logits last
 ```
@@ -129,5 +156,42 @@ adding reduction partitions.
 At long `M`, the two-dimensional tile grid is already large. Do not force the
 next optimization there: additional reduction partitions would only add a
 temporary buffer and another launch.
+
+## Benchmark Analysis: Identify Under-Filled Prefill Shapes
+
+Compare the matrix kernel at both an occupied control shape and the short K/V
+shape, then benchmark the latter without enabling Split-K:
+
+```bash
+for context in 32 128 2048; do
+  for projection in q k v o gate up down; do
+    pdm run bench-week2-operators --solution tiny_llm --model qwen3-4b \
+      --section prefill-projections --context "${context}" \
+      --prefill-projection "${projection}"
+  done
+done
+
+```
+
+The dispatch formula gives the unsplit 32-row K projection 32 independent
+threadgroups.
+
+Attach the complete-model prefill delta and per-projection tables at 32, 128,
+and 2,048 rows. Do not select Split-K merely because projections still occupy
+most of prefill. First require the long or wide controls to approach MLX while
+the short, narrow projection remains disproportionately slow.
+
+Use the dispatch calculation and short-shape operator sweep to establish that
+the unsplit result grid has too few independent threadgroups. Use the matched
+long-shape control to rule out costly work inside each tile; if it exposes such
+a cost, repair Day 6 before multiplying the grid. The
+[reference checkpoint](./appendix-performance.md#day-6-use-cooperative-loads-for-quantized-prefill)
+pairs the prefill gain with long and short operator controls and the dispatch
+geometry that motivates Split-K. A remaining arithmetic hot spot would send
+you back to Day 6 instead.
+
+> **Optional profiling evidence.** A 32/128-row attribution can corroborate the
+> shape analysis, but it does not replace the matched complete-model delta,
+> projection controls, and dispatch calculation above.
 
 {{#include copyright.md}}

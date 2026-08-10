@@ -175,6 +175,21 @@ this mutation boundary is explicit and safe as long as the cache owns its page
 and attention depends on the returned array. Full-buffer copies remain only
 when geometric capacity grows.
 
+Complete every learner-extension integration point before rebuilding:
+
+- create `src/extensions/src/paged_attention.cpp` for the primitive and
+  `src/extensions/src/paged_attention.metal` for its kernel,
+- register those C++ and Metal sources in their respective lists in
+  `src/extensions/CMakeLists.txt`,
+- declare `paged_cache_update` in `src/extensions/src/tiny_llm_ext.h`, and
+- register its Python binding in `src/extensions/bindings.cpp`.
+
+Then rebuild:
+
+```bash
+pdm run build-ext
+```
+
 Test this behavior through the cache interface: append across a tail-page
 boundary, grow the slab, release and reuse page ids, and compare the gathered
 logical sequence with `TinyKvFullCache`.
@@ -296,6 +311,15 @@ Before implementing, make sure the following are clear:
 src/tiny_llm/paged_kv_cache.py
 ```
 
+Modify `TinyKvPagedPool.__init__`, `allocate_page`, `write_page_slice`, and
+`free_page` in this task. For the slice-sized device
+write, replace the Week 3 Day 3 stubs `tiny_llm_ext::paged_cache_update`,
+`PagedCacheUpdate::eval_cpu`, and `PagedCacheUpdate::eval_gpu` in
+`src/extensions/src/paged_attention.cpp`, and implement
+`paged_cache_update_kernel` in `src/extensions/src/paged_attention.metal`.
+Their declaration, binding, source/Metal files, and CMake registration already
+exist; do not create a second paged-cache API.
+
 Design layer-owned page pools that:
 
 - own a free-page allocator,
@@ -317,6 +341,10 @@ allocated page ids.
 src/tiny_llm/paged_kv_cache.py
 ```
 
+Modify `TinyKvPagedCache.__init__`, `update_and_fetch`, `release`, and
+`rewind`. Use `TinyKvPagedPool.write_page_slice` from Task 1 for
+every physical append.
+
 Replace the "one layer cache = one dense KV tensor" model with:
 
 - `page_ids`
@@ -331,6 +359,12 @@ Replace the "one layer cache = one dense KV tensor" model with:
 src/tiny_llm/paged_kv_cache.py
 src/tiny_llm/qwen3_week3.py
 ```
+
+Modify `TinyKvPagedCache.gather_dense` in
+`src/tiny_llm/paged_kv_cache.py`, plus `Qwen3ModelWeek3.__init__`,
+`Qwen3ModelWeek3.create_kv_cache`, and `Qwen3MultiHeadAttention.__call__` in
+`src/tiny_llm/qwen3_week3.py`. This checkpoint deliberately does not implement
+`paged_attention`; Day 4 owns that function.
 
 Build a compatibility path that reconstructs dense K/V from pages and compares it against `TinyKvFullCache`.
 
@@ -359,9 +393,16 @@ but it does not remove allocation, fragmentation, or copying inside the
 GPU-visible heap.
 Fixed-size pages still let a server reuse freed capacity, grow requests without
 reserving their maximum sequence length, and batch requests with different
-context lengths. These are capacity and lifecycle wins. They should be measured
-with live-request count, allocated bytes, fragmentation, and scheduler
-throughput—not inferred from one request's token latency.
+context lengths. These are useful lifecycle mechanisms, but a fixed-batch trace
+measures KV-storage headroom rather than admission capacity. Claiming that more
+requests can be admitted requires a separate memory-capped sweep.
+
+Report fragmentation with an aligned numerator and denominator. The benchmark
+finds the snapshot with the largest sum of unused slots in the final live page
+of every request/layer cache, then divides that sum by all token slots in live
+pages at the same snapshot. It reports the unused-slot bytes as well. Unused
+physical pool capacity is excluded from that fraction and remains visible in
+the separate live-page and capacity-page counters.
 
 ```bash
 pdm run test --week 3 --day 3

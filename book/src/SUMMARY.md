@@ -1,4 +1,4 @@
-# LLM Serving in a Week
+# Tiny-LLM
 
 [Learn LLM Serving](./preface.md)
 [Setting Up the Environment](./setup.md)
@@ -15,10 +15,11 @@
     - [Sampling and Preparing for Week 2](./week1-07-sampling-prepare.md)
 - [🚧 Week 2: A Step Closer to vLLM](./week2-overview.md)
     - [🚧 KV Cache](./week2-01-kv-cache.md)
-    - [🚧 Benchmark and Profile](./week2-02-benchmarking.md)
-    - [🚧 Quantized Matvec](./week2-03-quantized-matvec.md)
-    - [🚧 Fused Decode Attention](./week2-04-decode-attention.md)
-    - [🚧 Fused Model Kernels](./week2-05-fast-kernels.md)
+    - [🚧 Benchmarking and Profiling](./week2-02-benchmark-profile.md)
+        - [🚧 Optional: Metal Profiling](./week2-advanced-profiling.md)
+    - [🚧 Quantize the Model](./week2-03-quantize-model.md)
+    - [🚧 Fused Model Kernels](./week2-04-fused-model-kernels.md)
+    - [🚧 Fused Decode Attention](./week2-05-decode-attention.md)
     - [🚧 SIMD-Matrix Prefill](./week2-06-simd-matrix-prefill.md)
     - [🚧 Split-K Prefill](./week2-07-split-k-prefill.md)
 - [🚧 Week 3: Build a Mini vLLM](./week3-overview.md)
@@ -28,9 +29,17 @@
     - [🚧 Direct Paged Attention](./week3-04-paged-attention-part2.md)
     - [🚧 Paged FlashAttention](./week3-05-flash-attention.md)
     - [🚧 Optional: Speculative Decoding](./week3-optional-speculative-decoding.md)
-    - [Optional: Mixture of Experts](./week3-optional-moe.md)
+    - [🚧 Optional: Mixture of Experts](./week3-optional-moe.md)
 - [🚧 Week 4: Build a Coding Agent](./week4-overview.md)
-- [🚧 Appendix: Performance by Chapter](./appendix-performance.md)
+    - [🚧 Agent Loop](./week4-01-agent-loop.md)
+    - [🚧 Tools](./week4-02-tools.md)
+    - [🚧 Safety and Validation](./week4-03-safe-editing.md)
+    - [🚧 Interactive Sessions](./week4-04-sessions.md)
+    - [🚧 Context Compaction](./week4-05-compaction.md)
+    - [🚧 Control and Recovery](./week4-06-control-recovery.md)
+    - [🚧 Evaluation](./week4-07-evaluation.md)
+- [🚧 Appendix: Performance Evidence Ledger](./appendix-performance.md)
+- [Sponsored by Raft.build](./sponsor.md)
 
 ---
 

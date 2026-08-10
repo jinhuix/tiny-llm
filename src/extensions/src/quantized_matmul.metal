@@ -2,6 +2,14 @@
 
 #include "mlx/backend/metal/kernels/utils.h"
 
+using namespace metal;
+
+// Later checkpoints extend this file with:
+//   quantized_matmul_simdgroup_w4a16_g128       (Week 2, Day 6)
+//   quantized_matmul_simdgroup_splitk_w4a16_g128 (Week 2, Day 7)
+//   quantized_matmul_splitk_reduce               (Week 2, Day 7)
+//   quantized_embedding_w4a16_g128               (Week 3, Day 4)
+
 inline uint32_t unpack_int4(uint32_t packed, int value_index) {
     return (packed >> (value_index * 4)) & 0xFu;
 }
@@ -91,7 +99,7 @@ instantiate_kernel(
  *   - 使用仿射公式和 simd_sum 完成 reduction。
  */
 template <typename T>
-[[kernel]] void quantized_matvec_x4_w4a16_g128(
+[[kernel]] void quantized_matvec_x4_fast_w4a16_g128(
     device const T *scales [[buffer(0)]],
     device const T *biases [[buffer(1)]],
     device const T *a [[buffer(2)]],
@@ -207,6 +215,6 @@ template <typename T>
 }
 
 instantiate_kernel(
-    "quantized_matvec_x4_w4a16_g128_bf16",
-    quantized_matvec_x4_w4a16_g128,
+    "quantized_matvec_x4_fast_w4a16_g128_bf16",
+    quantized_matvec_x4_fast_w4a16_g128,
     bfloat16_t);

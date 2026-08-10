@@ -6,7 +6,7 @@ In this chapter, we will build **direct paged attention**. The scheduler passes
 request-local block tables and context lengths to a GPU kernel, which reads K/V
 from the shared layer pool without gathering a dense batch first.
 
-> **Prerequisite:** Complete Week 3 Day 3's paged storage and Week 2 Day 4's
+> **Prerequisite:** Complete Week 3 Day 3's paged storage and Week 2 Day 5's
 > online-softmax attention. The new concept here is translating logical K/V
 > positions through a block table. Tiled FlashAttention comes only after this
 > direct path works.
@@ -239,15 +239,31 @@ Use this implementation order:
 
 Each step has a direct correctness check before the next abstraction is added.
 
-## Correctness Invariants
+## What Must Hold, and What Breaks If It Doesn't
 
 These are the invariants worth checking in tests:
 
-1. `context_len` always equals the number of written logical token positions.
-2. `block_table` reconstructs the same logical KV order as the dense baseline.
-3. the allocator never hands the same page to two live cache handles unless explicit sharing is implemented.
-4. releasing a request returns all pages owned by all of its layer caches exactly once.
-5. decode allocates a new page only when the tail page overflows.
+1. **`context_len` equals the number of written logical token positions.** If it
+   is too small, attention skips written K/V; if it is too large, attention
+   reads unwritten tail slots. Either case makes paged output diverge from the
+   dense baseline.
+2. **`block_table` reconstructs the same logical K/V order as the dense
+   baseline.** A wrong mapping can pair a query with the wrong token's K/V and
+   change the output even when every page contains valid data. Reordering
+   complete pages can change a causal-prefix result because it changes which
+   K/V pairs each query can see. By contrast, one-token decode over all
+   positions in complete pages is permutation-invariant to their order when
+   each K/V pair moves together.
+3. **The allocator gives each page to only one live cache handle unless sharing
+   is explicit.** If two live handles alias a page, a write for one request
+   overwrites K/V that the other request can still attend to.
+4. **Releasing a request returns every page owned by every layer cache exactly
+   once.** Missing a page leaks pool capacity; returning one twice raises the
+   pool's already-free error instead of completing cleanup.
+5. **Decode allocates a new page only when the tail page overflows.** Allocating
+   earlier strands writable tail slots and inflates the used-page count. This
+   course pool grows instead of reporting exhaustion, so that waste can force
+   backing storage to grow and copy earlier, increasing memory pressure.
 
 ## Task 1: Add Batch Metadata
 
@@ -256,6 +272,11 @@ src/tiny_llm/paged_kv_cache.py
 src/tiny_llm/kv_cache.py
 src/tiny_llm/batch.py
 ```
+
+Modify `TinyKvPagedCache.block_table`, `context_lens`, `paged_metadata`, and
+`update_and_fetch_paged` in `src/tiny_llm/paged_kv_cache.py`. Then update
+`Request.try_prefill` and `_step` in `src/tiny_llm/batch.py` to carry those
+arrays for every active request.
 
 Extend the batch cache and scheduler so they can prepare:
 
@@ -271,6 +292,24 @@ src/tiny_llm/attention.py
 src/extensions/src/paged_attention.cpp
 src/extensions/src/paged_attention.metal
 ```
+
+Modify these exact starter functions:
+
+- `paged_attention` in `src/tiny_llm/attention.py`;
+- `tiny_llm_ext::paged_attention`, `PagedAttention::eval_cpu`, and
+  `PagedAttention::eval_gpu` in `src/extensions/src/paged_attention.cpp`;
+- `paged_attention_decode` and `paged_attention_scalar_f32` in
+  `src/extensions/src/paged_attention.metal`.
+
+This checkpoint also turns the already-readable quantized token lookup into
+the Week 3 one-dispatch path. Modify `QuantizedEmbedding.__call__` in
+`src/tiny_llm/embedding.py`, `tiny_llm_ext::quantized_embedding` plus
+`QuantizedEmbedding::eval_cpu`/`eval_gpu` in
+`src/extensions/src/quantized_matmul.cpp`, and
+`quantized_embedding_w4a16_g128` in
+`src/extensions/src/quantized_matmul.metal`. The starter declarations,
+bindings, stubs, and build registrations for both operations already exist and
+remain fail-closed until you replace them.
 
 Add a paged attention interface whose inputs come from the paged runtime rather
 than a dense reconstructed `S` dimension. Preserve the Week 2 precision
@@ -333,6 +372,10 @@ dense-only special case: Day 5 optimizes this same paged contract.
 src/tiny_llm/qwen3_week3.py
 ```
 
+Modify `Qwen3MultiHeadAttention.__call__`, `Qwen3ModelWeek3.__init__`, and
+`Qwen3ModelWeek3.__call__` to select the paged path and enable the custom
+embedding only at this cumulative checkpoint.
+
 Update the model so it can route to paged attention when the cache provides paged runtime metadata.
 
 Append K/V to the page pool and pass its metadata to attention for every query
@@ -357,6 +400,10 @@ dense-gather teaching ablation, not the completed serving path.
 src/tiny_llm/batch.py
 ```
 
+Modify `Request.try_prefill`, `Request.decode_done`, `_step`, and
+`batch_generate`. Request cleanup must call `TinyKvPagedCache.release` for
+every layer cache.
+
 Update request admission, slot reuse, and request removal so that:
 
 - finished requests free their pages,
@@ -380,6 +427,30 @@ Record three operator baselines on the same machine:
    K/V gather,
 2. your direct paged-attention path,
 3. the MLX attention path as a production-library baseline.
+
+Use the same Qwen3-4B decode shape for all three paths. The dense control must
+include its required page-to-dense gather; the direct path reads the same page
+metadata; the MLX row measures its fused attention operator on the already
+gathered tensor:
+
+```bash
+pdm run bench-week3-attention --offline --contexts 128 1024 \
+  --page-size 128 --warmup 5 --iterations 60 --repeats 4 \
+  --cooldown-seconds 1 \
+  --json-output benchmark_results/m4-pro-qwen3-4b-week3-attention-mlx-0.32.0.json
+```
+
+Each value is the median of four balanced fresh-process medians, with 60
+synchronized calls after five warmups per process:
+
+| Context | Dense + gather | Direct paged | MLX fused |
+|---:|---:|---:|---:|
+| 128 | 184.01 us | 187.55 us | 153.59 us |
+| 1,024 | 420.88 us | 249.79 us | 207.18 us |
+
+Direct traversal is 1.9% slower than dense-plus-gather at 128 tokens, but 40.7%
+faster at 1,024 tokens. MLX remains faster at both shapes. The checked BF16
+outputs match the readable dense equation within the documented 2e-2 tolerance.
 
 ### Checkpoint 1: Establish a Correct Direct Path
 
@@ -435,23 +506,30 @@ end-to-end workload with requests entering and leaving the batch, then report:
 
 Keep the dense path as a teaching ablation so you can measure when contiguous
 attention is faster. The completed serving route stays paged: it eliminates
-repacks, reuses pages across scheduler steps, and can admit more concurrent
-requests. Day 5 optimizes its long-prefill schedule rather than routing around
-the page-table contract.
+repacks, reuses pages across scheduler steps, and leaves more measured KV
+headroom in the fixed-batch trace. Proving that it admits more concurrent
+requests requires a memory-capped admission sweep. Day 5 optimizes its
+long-prefill schedule rather than routing around the page-table contract.
 
 Use the paired serving runner rather than a preallocated static request:
 
 ```bash
-pdm run bench-serving-progression --offline --repeats 3 \
+pdm run bench-serving-progression --offline --repeats 4 \
   --model qwen3-4b --num-seqs 16 --batch-size 4 \
   --min-input-len 128 --max-input-len 1024 \
-  --min-output-len 32 --max-output-len 128 --prefill-step 128
+  --min-output-len 32 --max-output-len 128 --prefill-step 128 \
+  --warmup 1 --cooldown-seconds 1 \
+  --json-output benchmark_results/m4-pro-qwen3-4b-week3-serving-mlx-0.32.0.json
 ```
 
 It compares Week 2 dense batch reconstruction, Week 3 paged storage with the
 dense-gather compatibility path, and Week 3 direct paged attention. It resets
 page capacity after warmup and reports prefill, output, and decode throughput
-alongside peak KV bytes, copy volume, page reuse, and tail fragmentation.
+alongside peak KV bytes, copy volume, page reuse, and tail fragmentation. The
+direct path's four-process medians are 679.56 prefill tok/s, 41.88 output tok/s,
+82.11 decode tok/s, and 0.558 requests/s. Its synchronized decode calls take
+38.27/39.83/43.46 ms at median/p95/max; the completion gaps, which include
+intervening scheduler and prefill work, are 39.13/224.70/240.99 ms.
 
 ```bash
 pdm run test --week 3 --day 4

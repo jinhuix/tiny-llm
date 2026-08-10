@@ -1,6 +1,7 @@
 #include "tiny_llm_ext.h"
 
 #include <stdexcept>
+#include <string>
 
 #ifdef _METAL_
 #include "mlx/backend/metal/device.h"
@@ -9,8 +10,17 @@
 
 namespace tiny_llm_ext {
 
+namespace {
+
+[[noreturn]] void checkpoint_todo(const char *function, const char *checkpoint) {
+    throw std::runtime_error(std::string(function) + " is a starter stub; implement it in " + checkpoint);
+}
+
+}  // namespace
+
 mx::array quantized_matmul(const mx::array &scales, const mx::array &biases, int group_size, int bits,
                            const mx::array &a, const mx::array &b, bool transpose_b, bool use_simdgroup,
+                           bool use_split_k,
                            mx::StreamOrDevice s /* = {} */) {
     // W4A16: bit = 4, group_size = 128
     if (bits != 4) {
@@ -58,7 +68,7 @@ mx::array quantized_matmul(const mx::array &scales, const mx::array &biases, int
     // No computation happens here. MLX records this primitive in its lazy
     // graph and calls eval_cpu/eval_gpu only when the output is evaluated.
     return mx::array({M, D_out}, a.dtype(),
-                     std::make_shared<QuantizedMatmul>(to_stream(s), group_size, bits, use_simdgroup),
+                     std::make_shared<QuantizedMatmul>(to_stream(s), use_simdgroup, use_split_k),
                      {scales, biases, a, b});
 }
 
@@ -93,7 +103,7 @@ void QuantizedMatmul::eval_gpu(const std::vector<mx::array> &inputs, std::vector
 
     // M <= 8 时用 SIMD matvec；否则用一线程计算一个输出的 vanilla。
     const bool use_matvec = use_simdgroup_ && M <= 8;
-    const char *kernel_name = use_matvec ? "quantized_matvec_x4_w4a16_g128_bf16"
+    const char *kernel_name = use_matvec ? "quantized_matvec_x4_fast_w4a16_g128_bf16"
                                          : "quantized_matmul_vanilla_w4a16_g128_bf16";
     auto kernel = device.get_kernel(kernel_name, library);
     auto &encoder = mx::metal::get_command_encoder(stream);
@@ -137,5 +147,19 @@ void QuantizedMatmul::eval_gpu(const std::vector<mx::array> &, std::vector<mx::a
 }
 
 #endif
+
+// Week 3, Day 4. The earlier Week 2 checkpoints keep the readable row lookup.
+mx::array quantized_embedding(const mx::array &, const mx::array &, const mx::array &, const mx::array &, int, int,
+                              mx::StreamOrDevice) {
+    checkpoint_todo("quantized_embedding", "Week 3, Day 4");
+}
+
+void QuantizedEmbedding::eval_cpu(const std::vector<mx::array> &, std::vector<mx::array> &) {
+    checkpoint_todo("QuantizedEmbedding::eval_cpu", "Week 3, Day 4");
+}
+
+void QuantizedEmbedding::eval_gpu(const std::vector<mx::array> &, std::vector<mx::array> &) {
+    checkpoint_todo("QuantizedEmbedding::eval_gpu", "Week 3, Day 4");
+}
 
 }  // namespace tiny_llm_ext
