@@ -43,9 +43,9 @@ class Qwen3MultiHeadAttention:
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads
         self.head_dim = head_dim
-        self.rms_norm_eps = rms_norm_eps
         self.wq, self.wk, self.wv, self.wo = wq, wk, wv, wo
-        self.q_norm, self.k_norm = q_norm, k_norm
+        self.q_norm = RMSNorm(head_dim, q_norm, eps=rms_norm_eps)
+        self.k_norm = RMSNorm(head_dim, k_norm, eps=rms_norm_eps)
         self.rope = RoPE(head_dim, max_seq_len, theta, traditional=False)
 
     def __call__(
@@ -58,8 +58,8 @@ class Qwen3MultiHeadAttention:
         k = linear(x, self.wk).reshape(B, L, self.num_kv_heads, self.head_dim)   # (B, L, H_kv, D)
         v = linear(x, self.wv).reshape(B, L, self.num_kv_heads, self.head_dim)   # (B, L, H_kv, D)
 
-        q = self.rope(mx.fast.rms_norm(q, self.q_norm, self.rms_norm_eps), offset=slice(0, L))
-        k = self.rope(mx.fast.rms_norm(k, self.k_norm, self.rms_norm_eps), offset=slice(0, L))
+        q = self.rope(self.q_norm(q), offset=slice(0, L))
+        k = self.rope(self.k_norm(k), offset=slice(0, L))
 
         q, k, v = (t.transpose(0, 2, 1, 3) for t in (q, k, v))  # (B, H_*, L, D)
         out = scaled_dot_product_attention_grouped(

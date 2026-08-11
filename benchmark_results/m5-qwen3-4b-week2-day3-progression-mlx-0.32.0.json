@@ -1,0 +1,155 @@
+{
+  "source": {
+    "git_commit": "4e2fcf12ea61de2324f398f802b658961a167784",
+    "git_tracked_dirty": true
+  },
+  "host": {
+    "platform": "macOS-26.5-arm64-arm-64bit",
+    "machine": "arm64",
+    "processor": "arm",
+    "python_version": "3.12.13",
+    "mlx_version": "0.32.0",
+    "hardware": {
+      "machine_name": "MacBook Air",
+      "machine_model": "Mac17,3",
+      "chip_type": "Apple M5",
+      "cpu_cores": "proc 10:4:6:0",
+      "gpu_model": "Apple M5",
+      "gpu_cores": "8",
+      "physical_memory": "16 GB"
+    }
+  },
+  "configuration": {
+    "model": "qwen3-4b",
+    "solution": "tiny_llm",
+    "suite": "week2",
+    "device": "gpu",
+    "input_len": 128,
+    "output_len": 129,
+    "warmup": 2,
+    "repeats": 4,
+    "seed": 0,
+    "prefill_logits": "last",
+    "offline": true,
+    "cooldown_seconds": 1.0,
+    "variants": [
+      "week2-kv-cache",
+      "week2-quantized-matvec",
+      "mlx"
+    ]
+  },
+  "execution_order": [
+    [
+      "week2-kv-cache",
+      "week2-quantized-matvec",
+      "mlx"
+    ],
+    [
+      "mlx",
+      "week2-quantized-matvec",
+      "week2-kv-cache"
+    ],
+    [
+      "week2-kv-cache",
+      "week2-quantized-matvec",
+      "mlx"
+    ],
+    [
+      "mlx",
+      "week2-quantized-matvec",
+      "week2-kv-cache"
+    ]
+  ],
+  "results": {
+    "week2-kv-cache": {
+      "label": "2.1 KV cache",
+      "samples": [
+        {
+          "prefill": 845.56,
+          "decode": 13.95,
+          "output": 13.81
+        },
+        {
+          "prefill": 560.47,
+          "decode": 7.27,
+          "output": 7.21
+        },
+        {
+          "prefill": 548.04,
+          "decode": 9.08,
+          "output": 8.98
+        },
+        {
+          "prefill": 163.21,
+          "decode": 4.91,
+          "output": 4.8
+        }
+      ],
+      "median": {
+        "prefill": 554.255,
+        "decode": 8.175,
+        "output": 8.095
+      }
+    },
+    "week2-quantized-matvec": {
+      "label": "2.3 Quantized matvec",
+      "samples": [
+        {
+          "prefill": 89.57,
+          "decode": 31.34,
+          "output": 23.39
+        },
+        {
+          "prefill": 55.1,
+          "decode": 25.92,
+          "output": 17.76
+        },
+        {
+          "prefill": 46.27,
+          "decode": 19.31,
+          "output": 13.73
+        },
+        {
+          "prefill": 47.92,
+          "decode": 19.53,
+          "output": 13.98
+        }
+      ],
+      "median": {
+        "prefill": 51.510000000000005,
+        "decode": 22.725,
+        "output": 15.870000000000001
+      }
+    },
+    "mlx": {
+      "label": "MLX",
+      "samples": [
+        {
+          "prefill": 684.83,
+          "decode": 35.59,
+          "output": 34.09
+        },
+        {
+          "prefill": 631.17,
+          "decode": 40.87,
+          "output": 38.68
+        },
+        {
+          "prefill": 358.49,
+          "decode": 27.54,
+          "output": 25.77
+        },
+        {
+          "prefill": 302.35,
+          "decode": 24.75,
+          "output": 23.05
+        }
+      ],
+      "median": {
+        "prefill": 494.83,
+        "decode": 31.565,
+        "output": 29.93
+      }
+    }
+  }
+}
