@@ -1,127 +1,149 @@
 #include <algorithm>
-#include <stdexcept>
 #include <string>
 
+#include "mlx/utils.h"
 #include "tiny_llm_ext.h"
 
 #ifdef _METAL_
 #include "mlx/backend/metal/device.h"
-#include "mlx/backend/metal/utils.h"
 #endif
 
 namespace tiny_llm_ext {
 
 namespace {
 
-[[noreturn]] void checkpoint_todo(const char *function, const char *checkpoint) {
-    throw std::runtime_error(std::string(function) + " is a starter stub; implement it in " + checkpoint);
+void require_float_dtype(const mx::array &x, const char *name) {
+    if (x.dtype() != mx::float32 && x.dtype() != mx::float16 && x.dtype() != mx::bfloat16) {
+        throw std::runtime_error(std::string(name) + ": expected float32, float16, or bfloat16");
+    }
+}
+
+const char *dtype_suffix(const mx::array &x) {
+    if (x.dtype() == mx::float32) {
+        return "f32";
+    }
+    if (x.dtype() == mx::float16) {
+        return "f16";
+    }
+    if (x.dtype() == mx::bfloat16) {
+        return "bf16";
+    }
+    throw std::runtime_error("unsupported dtype");
 }
 
 }  // namespace
 
-// Week 2, Day 4.
 mx::array rms_norm(const mx::array &x, const mx::array &weight, float eps, mx::StreamOrDevice s) {
-    if (x.dtype() != mx::bfloat16 || weight.dtype() != mx::bfloat16) {
-        throw std::runtime_error("rms_norm: x and weight must be bfloat16");
-    }
-    if (x.ndim() == 0 || weight.ndim() != 1 || weight.shape()[0] != x.shape().back()) {
-        throw std::runtime_error("rms_norm: weight must match x's final dimension");
-    }
-    if (eps <= 0.0f) {
-        throw std::runtime_error("rms_norm: eps must be positive");
+    require_float_dtype(x, "rms_norm");
+    if (x.dtype() != weight.dtype() || weight.ndim() != 1 || weight.shape()[0] != x.shape().back()) {
+        throw std::runtime_error("rms_norm: weight must match the input dtype and final dimension");
     }
     return mx::array(x.shape(), x.dtype(), std::make_shared<Week2RMSNorm>(to_stream(s), eps), {x, weight});
 }
 
 mx::array rope(const mx::array &x, const mx::array &offsets, int dims, float base, bool traditional,
                mx::StreamOrDevice s) {
-    if (x.dtype() != mx::bfloat16) {
-        throw std::runtime_error("rope: x must be bfloat16");
-    }
-    if (x.ndim() != 4 || offsets.dtype() != mx::int32 || offsets.ndim() != 1 ||
-        offsets.shape()[0] != x.shape()[0]) {
-        throw std::runtime_error("rope: expected x(B,L,H,D) and int32 offsets(B)");
+    require_float_dtype(x, "rope");
+    if (x.ndim() != 4 || offsets.dtype() != mx::int32 || offsets.ndim() != 1 || offsets.shape()[0] != x.shape()[0]) {
+        throw std::runtime_error("rope: expected x=[B,L,H,D] and one int32 offset per batch row");
     }
     if (dims <= 0 || dims > x.shape()[3] || dims % 2 != 0) {
-        throw std::runtime_error("rope: dims must be positive, even, and <= D");
+        throw std::runtime_error("rope: dims must be positive, even, and no larger than the head dimension");
     }
-    if (base <= 0.0f) {
-        throw std::runtime_error("rope: base must be positive");
-    }
-    return mx::array(x.shape(), x.dtype(),
-                     std::make_shared<Week2RoPE>(to_stream(s), dims, base, traditional), {x, offsets});
+    return mx::array(x.shape(), x.dtype(), std::make_shared<Week2RoPE>(to_stream(s), dims, base, traditional),
+                     {x, offsets});
 }
 
 mx::array swiglu(const mx::array &gate, const mx::array &up, mx::StreamOrDevice s) {
-    if (gate.dtype() != mx::bfloat16 || up.dtype() != mx::bfloat16) {
-        throw std::runtime_error("swiglu: gate and up must be bfloat16");
-    }
-    if (gate.shape() != up.shape()) {
-        throw std::runtime_error("swiglu: gate and up must have the same shape");
+    require_float_dtype(gate, "swiglu");
+    if (gate.dtype() != up.dtype() || gate.shape() != up.shape()) {
+        throw std::runtime_error("swiglu: gate and up must have the same shape and dtype");
     }
     return mx::array(gate.shape(), gate.dtype(), std::make_shared<Week2SwiGLU>(to_stream(s)), {gate, up});
 }
 
-void Week2RMSNorm::eval_cpu(const std::vector<mx::array> &, std::vector<mx::array> &) {
-    throw std::runtime_error("rms_norm: this course primitive is GPU-only");
+mx::array decode_attention(const mx::array &q, const mx::array &k, const mx::array &v, const mx::array &mask,
+                           float scale, bool is_causal, bool has_mask, int num_heads, int num_kv_heads,
+                           mx::StreamOrDevice s) {
+    require_float_dtype(q, "decode_attention");
+    if (q.dtype() != k.dtype() || q.dtype() != v.dtype() || mask.dtype() != mx::float32) {
+        throw std::runtime_error("decode_attention: q, k, and v dtypes must match; mask must be float32");
+    }
+    if (q.ndim() != 3 || k.ndim() != 3 || v.ndim() != 3 || q.shape()[2] > 256 || q.shape()[2] != k.shape()[2] ||
+        q.shape()[2] != v.shape()[2] || k.shape() != v.shape() || num_heads % num_kv_heads != 0) {
+        throw std::runtime_error("decode_attention: incompatible attention shapes");
+    }
+    if (has_mask && (mask.ndim() != 3 || mask.shape()[0] != q.shape()[0] || mask.shape()[1] != q.shape()[1] ||
+                     mask.shape()[2] != k.shape()[1])) {
+        throw std::runtime_error("decode_attention: mask must have shape [B*Hq,L,S]");
+    }
+    return mx::array(
+        q.shape(), q.dtype(),
+        std::make_shared<Week2DecodeAttention>(to_stream(s), scale, is_causal, has_mask, num_heads, num_kv_heads),
+        {q, k, v, mask});
 }
 
-void Week2RMSNorm::eval_gpu(const std::vector<mx::array> &inputs, std::vector<mx::array> &outputs) {
-    const auto &x = inputs[0];       // (rows, D), flattened view of (..., D)
-    const auto &weight = inputs[1];  // (D,)
-    auto &out = outputs[0];
-    if (!x.flags().row_contiguous || !weight.flags().row_contiguous) {
-        throw std::runtime_error("rms_norm: GPU inputs must be row-contiguous");
-    }
+void Week2RMSNorm::eval_cpu(const std::vector<mx::array> &inputs, std::vector<mx::array> &outputs) {
+    throw std::runtime_error("rms_norm: the course extension is GPU-only");
+}
 
+void Week2RoPE::eval_cpu(const std::vector<mx::array> &inputs, std::vector<mx::array> &outputs) {
+    throw std::runtime_error("rope: the course extension is GPU-only");
+}
+
+void Week2SwiGLU::eval_cpu(const std::vector<mx::array> &inputs, std::vector<mx::array> &outputs) {
+    throw std::runtime_error("swiglu: the course extension is GPU-only");
+}
+
+void Week2DecodeAttention::eval_cpu(const std::vector<mx::array> &inputs, std::vector<mx::array> &outputs) {
+    throw std::runtime_error("decode_attention: the course extension is GPU-only");
+}
+
+#ifdef _METAL_
+
+void Week2RMSNorm::eval_gpu(const std::vector<mx::array> &inputs, std::vector<mx::array> &outputs) {
+    const auto &x = inputs[0];
+    const auto &weight = inputs[1];
+    auto &out = outputs[0];
     out.set_data(mx::allocator::malloc(out.nbytes()));
-    auto &device = mx::metal::device(stream().device);
-    auto kernel = device.get_kernel("week2_rms_norm_bf16", device.get_library("tiny_llm_ext"));
+    auto &d = mx::metal::device(stream().device);
+    auto kernel = d.get_kernel(std::string("week2_rms_norm_") + dtype_suffix(out), d.get_library("tiny_llm_ext_ref"));
     auto &encoder = mx::metal::get_command_encoder(stream());
     encoder.set_compute_pipeline_state(kernel);
     encoder.set_input_array(x, 0);
     encoder.set_input_array(weight, 1);
     encoder.set_output_array(out, 2);
-
-    const int dim = static_cast<int>(x.shape().back());
-    const int rows = static_cast<int>(x.size() / dim);
+    const int rows = x.size() / x.shape().back();
+    const int dim = x.shape().back();
     encoder.set_bytes(rows, 3);
     encoder.set_bytes(dim, 4);
     encoder.set_bytes(eps_, 5);
 
     // 一行一个threadgroup：256 个线程 = 8 个 32-lane SIMD groups
     // 每个 threadgroup 分配一小块共享内存，大小是 8 个 float
-    constexpr int threads_per_group = 256;
-    encoder.set_threadgroup_memory_length(8 * sizeof(float), 0);
-    encoder.dispatch_threadgroups(MTL::Size(rows, 1, 1), MTL::Size(threads_per_group, 1, 1));   // threadgroup grid(rows, 1, 1)
-}
-
-void Week2RoPE::eval_cpu(const std::vector<mx::array> &, std::vector<mx::array> &) {
-    throw std::runtime_error("rope: this course primitive is GPU-only");
+    constexpr int threads_per_threadgroup = 256;
+    constexpr int simdgroups_per_threadgroup = threads_per_threadgroup / 32;
+    encoder.set_threadgroup_memory_length(simdgroups_per_threadgroup * sizeof(float), 0);
+    encoder.dispatch_threadgroups(MTL::Size(rows, 1, 1), MTL::Size(threads_per_threadgroup, 1, 1));
 }
 
 void Week2RoPE::eval_gpu(const std::vector<mx::array> &inputs, std::vector<mx::array> &outputs) {
-    const auto &x = inputs[0];        // (B, L, H, D)
-    const auto &offsets = inputs[1];  // (B,), int32
-    auto &out = outputs[0];           // (B, L, H, D)
-    if (!x.flags().row_contiguous || !offsets.flags().row_contiguous) {
-        throw std::runtime_error("rope: GPU inputs must be row-contiguous");
-    }
-
+    const auto &x = inputs[0];
+    const auto &offsets = inputs[1];
+    auto &out = outputs[0];
     out.set_data(mx::allocator::malloc(out.nbytes()));
-    auto &device = mx::metal::device(stream().device);
-    auto kernel = device.get_kernel("week2_rope_bf16", device.get_library("tiny_llm_ext"));
+    auto &d = mx::metal::device(stream().device);
+    auto kernel = d.get_kernel(std::string("week2_rope_") + dtype_suffix(out), d.get_library("tiny_llm_ext_ref"));
     auto &encoder = mx::metal::get_command_encoder(stream());
     encoder.set_compute_pipeline_state(kernel);
     encoder.set_input_array(x, 0);
     encoder.set_input_array(offsets, 1);
     encoder.set_output_array(out, 2);
-
-    const int batch = static_cast<int>(x.shape()[0]);
-    const int length = static_cast<int>(x.shape()[1]);
-    const int heads = static_cast<int>(x.shape()[2]);
-    const int head_dim = static_cast<int>(x.shape()[3]);
-    const int traditional = traditional_ ? 1 : 0;
+    const int batch = x.shape()[0];
+    const int length = x.shape()[1];
+    const int heads = x.shape()[2];
+    const int head_dim = x.shape()[3];
+    const int traditional = traditional_;
     encoder.set_bytes(batch, 3);
     encoder.set_bytes(length, 4);
     encoder.set_bytes(heads, 5);
@@ -134,53 +156,81 @@ void Week2RoPE::eval_gpu(const std::vector<mx::array> &inputs, std::vector<mx::a
     // 一个tread处理4个head，计算一次theta在4个thread中复用，计算量减少4倍
     constexpr int heads_per_thread = 4;
     const int head_blocks = (heads + heads_per_thread - 1) / heads_per_thread;
-    // 旋转工作(dims/2个pair) + tail copy工作(未参与旋转的 head_dim - dims)
-    const int items_per_block = dims_ / 2 + (head_dim - dims_);
-    // 总线程数
-    const size_t work_items = static_cast<size_t>(batch) * length * head_blocks * items_per_block;
-    const size_t threads_per_group = std::min<size_t>(work_items, kernel->maxTotalThreadsPerThreadgroup());
-    encoder.dispatch_threads(MTL::Size(work_items, 1, 1), MTL::Size(threads_per_group, 1, 1));
-}
-
-void Week2SwiGLU::eval_cpu(const std::vector<mx::array> &, std::vector<mx::array> &) {
-    throw std::runtime_error("swiglu: this course primitive is GPU-only");
+    const int work_items = batch * length * head_blocks * (dims_ / 2 + head_dim - dims_);
+    const size_t threads = std::min<size_t>(work_items, kernel->maxTotalThreadsPerThreadgroup());
+    encoder.dispatch_threads(MTL::Size(work_items, 1, 1), MTL::Size(threads, 1, 1));
 }
 
 void Week2SwiGLU::eval_gpu(const std::vector<mx::array> &inputs, std::vector<mx::array> &outputs) {
-    const auto &gate = inputs[0];  // (..., D_ff)
-    const auto &up = inputs[1];    // (..., D_ff)
-    auto &out = outputs[0];        // (..., D_ff)
-    if (!gate.flags().row_contiguous || !up.flags().row_contiguous) {
-        throw std::runtime_error("swiglu: GPU inputs must be row-contiguous");
-    }
-
+    const auto &gate = inputs[0];
+    const auto &up = inputs[1];
+    auto &out = outputs[0];
     out.set_data(mx::allocator::malloc(out.nbytes()));
-    auto &device = mx::metal::device(stream().device);
-    auto kernel = device.get_kernel("week2_swiglu_bf16", device.get_library("tiny_llm_ext"));
+    auto &d = mx::metal::device(stream().device);
+    auto kernel = d.get_kernel(std::string("week2_swiglu_") + dtype_suffix(out), d.get_library("tiny_llm_ext_ref"));
     auto &encoder = mx::metal::get_command_encoder(stream());
     encoder.set_compute_pipeline_state(kernel);
     encoder.set_input_array(gate, 0);
     encoder.set_input_array(up, 1);
     encoder.set_output_array(out, 2);
-    const int size = static_cast<int>(out.size());
+    const int size = out.size();
     encoder.set_bytes(size, 3);
-
-    const size_t threads_per_group = std::min<size_t>(out.size(), kernel->maxTotalThreadsPerThreadgroup());
-    encoder.dispatch_threads(MTL::Size(out.size(), 1, 1), MTL::Size(threads_per_group, 1, 1));
+    const size_t threads = std::min<size_t>(out.size(), kernel->maxTotalThreadsPerThreadgroup());
+    encoder.dispatch_threads(MTL::Size(out.size(), 1, 1), MTL::Size(threads, 1, 1));
 }
 
-// Week 2, Day 5.
-mx::array decode_attention(const mx::array &, const mx::array &, const mx::array &, const mx::array &, float, bool,
-                           bool, int, int, mx::StreamOrDevice) {
-    checkpoint_todo("decode_attention", "Week 2, Day 5");
+void Week2DecodeAttention::eval_gpu(const std::vector<mx::array> &inputs, std::vector<mx::array> &outputs) {
+    const auto &q = inputs[0];
+    const auto &k = inputs[1];
+    const auto &v = inputs[2];
+    const auto &mask = inputs[3];
+    auto &out = outputs[0];
+    out.set_data(mx::allocator::malloc(out.nbytes()));
+    auto &d = mx::metal::device(stream().device);
+    auto kernel =
+        d.get_kernel(std::string("week2_decode_attention_") + dtype_suffix(out), d.get_library("tiny_llm_ext_ref"));
+    auto &encoder = mx::metal::get_command_encoder(stream());
+    encoder.set_compute_pipeline_state(kernel);
+    encoder.set_input_array(q, 0);
+    encoder.set_input_array(k, 1);
+    encoder.set_input_array(v, 2);
+    encoder.set_input_array(mask, 3);
+    encoder.set_output_array(out, 4);
+    const int q_rows = q.shape()[0];
+    const int length = q.shape()[1];
+    const int context = k.shape()[1];
+    const int dim = q.shape()[2];
+    const int is_causal = is_causal_;
+    const int has_mask = has_mask_;
+    encoder.set_bytes(q_rows, 5);
+    encoder.set_bytes(length, 6);
+    encoder.set_bytes(context, 7);
+    encoder.set_bytes(dim, 8);
+    encoder.set_bytes(num_heads_, 9);
+    encoder.set_bytes(num_kv_heads_, 10);
+    encoder.set_bytes(scale_, 11);
+    encoder.set_bytes(is_causal, 12);
+    encoder.set_bytes(has_mask, 13);
+    constexpr int simdgroups_per_query = 32;
+    encoder.set_threadgroup_memory_length(simdgroups_per_query * (dim + 3) * sizeof(float), 0);
+    encoder.dispatch_threadgroups(MTL::Size(q_rows * length, 1, 1), MTL::Size(simdgroups_per_query * 32, 1, 1));
 }
 
-void Week2DecodeAttention::eval_cpu(const std::vector<mx::array> &, std::vector<mx::array> &) {
-    checkpoint_todo("Week2DecodeAttention::eval_cpu", "Week 2, Day 5");
-}
+#else
 
+void Week2RMSNorm::eval_gpu(const std::vector<mx::array> &, std::vector<mx::array> &) {
+    throw std::runtime_error("Metal unavailable");
+}
+void Week2RoPE::eval_gpu(const std::vector<mx::array> &, std::vector<mx::array> &) {
+    throw std::runtime_error("Metal unavailable");
+}
+void Week2SwiGLU::eval_gpu(const std::vector<mx::array> &, std::vector<mx::array> &) {
+    throw std::runtime_error("Metal unavailable");
+}
 void Week2DecodeAttention::eval_gpu(const std::vector<mx::array> &, std::vector<mx::array> &) {
-    checkpoint_todo("Week2DecodeAttention::eval_gpu", "Week 2, Day 5");
+    throw std::runtime_error("Metal unavailable");
 }
+
+#endif
 
 }  // namespace tiny_llm_ext

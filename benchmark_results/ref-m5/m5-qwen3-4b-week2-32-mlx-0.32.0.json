@@ -1,0 +1,155 @@
+{
+  "source": {
+    "git_commit": "99db8577f092566badf8e5a432316424c1c1927d",
+    "git_tracked_dirty": true
+  },
+  "host": {
+    "platform": "macOS-26.5-arm64-arm-64bit",
+    "machine": "arm64",
+    "processor": "arm",
+    "python_version": "3.12.13",
+    "mlx_version": "0.32.0",
+    "hardware": {
+      "machine_name": "MacBook Air",
+      "machine_model": "Mac17,3",
+      "chip_type": "Apple M5",
+      "cpu_cores": "proc 10:4:6:0",
+      "gpu_model": "Apple M5",
+      "gpu_cores": "8",
+      "physical_memory": "16 GB"
+    }
+  },
+  "configuration": {
+    "model": "qwen3-4b",
+    "solution": "ref",
+    "suite": "week2",
+    "device": "gpu",
+    "input_len": 32,
+    "output_len": 33,
+    "warmup": 2,
+    "repeats": 4,
+    "seed": 0,
+    "prefill_logits": "last",
+    "offline": true,
+    "cooldown_seconds": 1.0,
+    "variants": [
+      "week2-simd-matmul",
+      "week2-split-k",
+      "mlx"
+    ]
+  },
+  "execution_order": [
+    [
+      "week2-simd-matmul",
+      "week2-split-k",
+      "mlx"
+    ],
+    [
+      "mlx",
+      "week2-split-k",
+      "week2-simd-matmul"
+    ],
+    [
+      "week2-simd-matmul",
+      "week2-split-k",
+      "mlx"
+    ],
+    [
+      "mlx",
+      "week2-split-k",
+      "week2-simd-matmul"
+    ]
+  ],
+  "results": {
+    "week2-simd-matmul": {
+      "label": "2.6 SIMD matrix prefill",
+      "samples": [
+        {
+          "prefill": 310.9,
+          "decode": 42.12,
+          "output": 38.21
+        },
+        {
+          "prefill": 321.68,
+          "decode": 51.57,
+          "output": 45.81
+        },
+        {
+          "prefill": 321.94,
+          "decode": 49.0,
+          "output": 43.82
+        },
+        {
+          "prefill": 316.68,
+          "decode": 47.06,
+          "output": 42.23
+        }
+      ],
+      "median": {
+        "prefill": 319.18,
+        "decode": 48.03,
+        "output": 43.025
+      }
+    },
+    "week2-split-k": {
+      "label": "2.7 Split-K prefill",
+      "samples": [
+        {
+          "prefill": 325.02,
+          "decode": 51.65,
+          "output": 45.94
+        },
+        {
+          "prefill": 324.69,
+          "decode": 51.47,
+          "output": 45.79
+        },
+        {
+          "prefill": 260.22,
+          "decode": 41.57,
+          "output": 36.95
+        },
+        {
+          "prefill": 314.67,
+          "decode": 48.03,
+          "output": 42.95
+        }
+      ],
+      "median": {
+        "prefill": 319.68,
+        "decode": 49.75,
+        "output": 44.370000000000005
+      }
+    },
+    "mlx": {
+      "label": "MLX",
+      "samples": [
+        {
+          "prefill": 420.01,
+          "decode": 55.15,
+          "output": 50.25
+        },
+        {
+          "prefill": 419.73,
+          "decode": 53.21,
+          "output": 48.67
+        },
+        {
+          "prefill": 406.22,
+          "decode": 51.53,
+          "output": 47.13
+        },
+        {
+          "prefill": 418.12,
+          "decode": 53.39,
+          "output": 48.8
+        }
+      ],
+      "median": {
+        "prefill": 418.925,
+        "decode": 53.3,
+        "output": 48.735
+      }
+    }
+  }
+}

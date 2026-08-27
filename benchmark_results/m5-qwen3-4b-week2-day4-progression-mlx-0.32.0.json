@@ -1,0 +1,260 @@
+{
+  "source": {
+    "git_commit": "99db8577f092566badf8e5a432316424c1c1927d",
+    "git_tracked_dirty": false
+  },
+  "host": {
+    "platform": "macOS-26.5-arm64-arm-64bit",
+    "machine": "arm64",
+    "processor": "arm",
+    "python_version": "3.12.13",
+    "mlx_version": "0.32.0",
+    "hardware": {
+      "machine_name": "MacBook Air",
+      "machine_model": "Mac17,3",
+      "chip_type": "Apple M5",
+      "cpu_cores": "proc 10:4:6:0",
+      "gpu_model": "Apple M5",
+      "gpu_cores": "8",
+      "physical_memory": "16 GB"
+    }
+  },
+  "configuration": {
+    "model": "qwen3-4b",
+    "solution": "tiny_llm",
+    "suite": "week2",
+    "device": "gpu",
+    "input_len": 128,
+    "output_len": 129,
+    "warmup": 2,
+    "repeats": 4,
+    "seed": 0,
+    "prefill_logits": "last",
+    "offline": true,
+    "cooldown_seconds": 0.0,
+    "variants": [
+      "week2-kv-cache",
+      "week2-quantized-matvec",
+      "week2-rmsnorm",
+      "week2-rope",
+      "week2-swiglu",
+      "mlx"
+    ]
+  },
+  "execution_order": [
+    [
+      "week2-kv-cache",
+      "week2-quantized-matvec",
+      "week2-rmsnorm",
+      "week2-rope",
+      "week2-swiglu",
+      "mlx"
+    ],
+    [
+      "mlx",
+      "week2-swiglu",
+      "week2-rope",
+      "week2-rmsnorm",
+      "week2-quantized-matvec",
+      "week2-kv-cache"
+    ],
+    [
+      "week2-kv-cache",
+      "week2-quantized-matvec",
+      "week2-rmsnorm",
+      "week2-rope",
+      "week2-swiglu",
+      "mlx"
+    ],
+    [
+      "mlx",
+      "week2-swiglu",
+      "week2-rope",
+      "week2-rmsnorm",
+      "week2-quantized-matvec",
+      "week2-kv-cache"
+    ]
+  ],
+  "results": {
+    "week2-kv-cache": {
+      "label": "2.1 KV cache",
+      "samples": [
+        {
+          "prefill": 735.52,
+          "decode": 13.76,
+          "output": 13.59
+        },
+        {
+          "prefill": 873.74,
+          "decode": 11.76,
+          "output": 11.67
+        },
+        {
+          "prefill": 876.09,
+          "decode": 14.16,
+          "output": 14.03
+        },
+        {
+          "prefill": 655.68,
+          "decode": 12.4,
+          "output": 12.24
+        }
+      ],
+      "median": {
+        "prefill": 804.63,
+        "decode": 13.08,
+        "output": 12.915
+      }
+    },
+    "week2-quantized-matvec": {
+      "label": "2.3 Quantized matvec",
+      "samples": [
+        {
+          "prefill": 100.11,
+          "decode": 42.48,
+          "output": 30.06
+        },
+        {
+          "prefill": 93.21,
+          "decode": 41.78,
+          "output": 29.07
+        },
+        {
+          "prefill": 92.53,
+          "decode": 38.02,
+          "output": 27.16
+        },
+        {
+          "prefill": 63.66,
+          "decode": 31.85,
+          "output": 21.39
+        }
+      ],
+      "median": {
+        "prefill": 92.87,
+        "decode": 39.900000000000006,
+        "output": 28.115000000000002
+      }
+    },
+    "week2-rmsnorm": {
+      "label": "2.4 Fast RMSNorm",
+      "samples": [
+        {
+          "prefill": 97.6,
+          "decode": 45.29,
+          "output": 31.17
+        },
+        {
+          "prefill": 92.94,
+          "decode": 45.68,
+          "output": 30.86
+        },
+        {
+          "prefill": 92.26,
+          "decode": 44.52,
+          "output": 30.26
+        },
+        {
+          "prefill": 65.08,
+          "decode": 33.02,
+          "output": 22.07
+        }
+      ],
+      "median": {
+        "prefill": 92.6,
+        "decode": 44.905,
+        "output": 30.560000000000002
+      }
+    },
+    "week2-rope": {
+      "label": "2.4 + Fast RoPE",
+      "samples": [
+        {
+          "prefill": 96.94,
+          "decode": 46.88,
+          "output": 31.84
+        },
+        {
+          "prefill": 94.65,
+          "decode": 47.47,
+          "output": 31.86
+        },
+        {
+          "prefill": 72.45,
+          "decode": 44.88,
+          "output": 27.93
+        },
+        {
+          "prefill": 64.3,
+          "decode": 31.8,
+          "output": 21.44
+        }
+      ],
+      "median": {
+        "prefill": 83.55000000000001,
+        "decode": 45.88,
+        "output": 29.884999999999998
+      }
+    },
+    "week2-swiglu": {
+      "label": "2.4 + Fused SwiGLU",
+      "samples": [
+        {
+          "prefill": 98.38,
+          "decode": 48.77,
+          "output": 32.86
+        },
+        {
+          "prefill": 95.86,
+          "decode": 48.79,
+          "output": 32.58
+        },
+        {
+          "prefill": 69.87,
+          "decode": 42.18,
+          "output": 26.5
+        },
+        {
+          "prefill": 63.76,
+          "decode": 34.88,
+          "output": 22.72
+        }
+      ],
+      "median": {
+        "prefill": 82.86500000000001,
+        "decode": 45.475,
+        "output": 29.54
+      }
+    },
+    "mlx": {
+      "label": "MLX",
+      "samples": [
+        {
+          "prefill": 1061.12,
+          "decode": 54.63,
+          "output": 52.35
+        },
+        {
+          "prefill": 1062.77,
+          "decode": 54.71,
+          "output": 52.43
+        },
+        {
+          "prefill": 694.41,
+          "decode": 44.56,
+          "output": 42.18
+        },
+        {
+          "prefill": 493.32,
+          "decode": 40.36,
+          "output": 37.6
+        }
+      ],
+      "median": {
+        "prefill": 877.7649999999999,
+        "decode": 49.595,
+        "output": 47.265
+      }
+    }
+  }
+}

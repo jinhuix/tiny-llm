@@ -1,0 +1,155 @@
+{
+  "source": {
+    "git_commit": "99db8577f092566badf8e5a432316424c1c1927d",
+    "git_tracked_dirty": true
+  },
+  "host": {
+    "platform": "macOS-26.5-arm64-arm-64bit",
+    "machine": "arm64",
+    "processor": "arm",
+    "python_version": "3.12.13",
+    "mlx_version": "0.32.0",
+    "hardware": {
+      "machine_name": "MacBook Air",
+      "machine_model": "Mac17,3",
+      "chip_type": "Apple M5",
+      "cpu_cores": "proc 10:4:6:0",
+      "gpu_model": "Apple M5",
+      "gpu_cores": "8",
+      "physical_memory": "16 GB"
+    }
+  },
+  "configuration": {
+    "model": "qwen3-4b",
+    "solution": "ref",
+    "suite": "week2",
+    "device": "gpu",
+    "input_len": 32,
+    "output_len": 97,
+    "warmup": 2,
+    "repeats": 4,
+    "seed": 0,
+    "prefill_logits": "last",
+    "offline": true,
+    "cooldown_seconds": 0.0,
+    "variants": [
+      "week2-swiglu",
+      "week2-decode-attention",
+      "mlx"
+    ]
+  },
+  "execution_order": [
+    [
+      "week2-swiglu",
+      "week2-decode-attention",
+      "mlx"
+    ],
+    [
+      "mlx",
+      "week2-decode-attention",
+      "week2-swiglu"
+    ],
+    [
+      "week2-swiglu",
+      "week2-decode-attention",
+      "mlx"
+    ],
+    [
+      "mlx",
+      "week2-decode-attention",
+      "week2-swiglu"
+    ]
+  ],
+  "results": {
+    "week2-swiglu": {
+      "label": "2.4 + Fused SwiGLU",
+      "samples": [
+        {
+          "prefill": 74.36,
+          "decode": 46.58,
+          "output": 38.93
+        },
+        {
+          "prefill": 73.4,
+          "decode": 44.11,
+          "output": 37.13
+        },
+        {
+          "prefill": 73.42,
+          "decode": 39.96,
+          "output": 34.17
+        },
+        {
+          "prefill": 43.4,
+          "decode": 33.8,
+          "output": 27.1
+        }
+      ],
+      "median": {
+        "prefill": 73.41,
+        "decode": 42.035,
+        "output": 35.650000000000006
+      }
+    },
+    "week2-decode-attention": {
+      "label": "2.5 Decode attention",
+      "samples": [
+        {
+          "prefill": 76.55,
+          "decode": 44.09,
+          "output": 37.36
+        },
+        {
+          "prefill": 74.11,
+          "decode": 44.0,
+          "output": 37.11
+        },
+        {
+          "prefill": 71.09,
+          "decode": 44.22,
+          "output": 37.0
+        },
+        {
+          "prefill": 47.87,
+          "decode": 38.86,
+          "output": 30.9
+        }
+      ],
+      "median": {
+        "prefill": 72.6,
+        "decode": 44.045,
+        "output": 37.055
+      }
+    },
+    "mlx": {
+      "label": "MLX",
+      "samples": [
+        {
+          "prefill": 393.83,
+          "decode": 49.34,
+          "output": 47.84
+        },
+        {
+          "prefill": 372.85,
+          "decode": 46.79,
+          "output": 45.36
+        },
+        {
+          "prefill": 353.02,
+          "decode": 42.98,
+          "output": 41.72
+        },
+        {
+          "prefill": 366.77,
+          "decode": 47.33,
+          "output": 45.83
+        }
+      ],
+      "median": {
+        "prefill": 369.81,
+        "decode": 47.06,
+        "output": 45.595
+      }
+    }
+  }
+}

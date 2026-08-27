@@ -27,6 +27,7 @@ from .quantize import QuantizedWeights, dequantize_linear, quantized_linear
 from .week2_kernels import (
     FastRMSNorm,
     FastRoPE,
+    decode_attention_custom,
     scaled_dot_product_attention,
     swiglu,
 )
@@ -128,8 +129,13 @@ class Qwen3MultiHeadAttention:
         k = k.transpose(0, 2, 1, 3)
         v = v.transpose(0, 2, 1, 3)
         k, v, _, mask = cache.update_and_fetch(k, v, mask_length=L, mask=mask)
-        if self.use_decode_attention:
-            out = scaled_dot_product_attention(q, k, v, scale=self.scale, mask=mask)
+        if (
+            self.use_decode_attention
+            and L <= DECODE_ATTENTION_MAX_QUERY
+            and k.shape[-2] <= DECODE_ATTENTION_MAX_CONTEXT
+            and not isinstance(mask, mx.array)
+        ):
+            out = decode_attention_custom(q, k, v, scale=self.scale, mask=mask)
         else:
             out = scaled_dot_product_attention_grouped(
                 q.astype(mx.float32),
@@ -266,6 +272,7 @@ class Qwen3ModelWeek2:
         self.use_fast_rope = use_fast_rope
         self.hidden_size = args.hidden_size
         self.vocab_size = args.vocab_size
+        self.precision = mx.bfloat16
 
         def model_weight(layer: Any) -> mx.array | QuantizedWeights:
             """Load one W(D_out, D_in) in the format required by checkpoint."""

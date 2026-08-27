@@ -1,0 +1,96 @@
+{
+  "benchmark": "MLX fused decode attention at Qwen3-4B shapes",
+  "qualification": "Synthetic operator stress test; not an end-to-end model-quality claim.",
+  "mlx_version": "0.32.0",
+  "device": {
+    "device_name": "Apple M5",
+    "max_recommended_working_set_size": 12713115648,
+    "memory_size": 17179869184,
+    "architecture": "applegpu_g17g",
+    "max_buffer_length": 9534832640,
+    "resource_limit": 499000
+  },
+  "shape": {
+    "batch": 1,
+    "query_tokens": 1,
+    "query_heads": 32,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "layers": 36,
+    "dtype": "bfloat16"
+  },
+  "method": {
+    "warmup": 3,
+    "iterations_per_process": 15,
+    "fresh_processes": 3,
+    "statistic": "median of synchronized per-process medians"
+  },
+  "results": [
+    {
+      "context_tokens": 2048,
+      "bf16_kv_gib": 0.28125,
+      "process_medians_ms_per_layer": [
+        0.7908749976195395,
+        0.5647079960908741,
+        0.6892920064274222
+      ],
+      "median_ms_per_layer": 0.6892920064274222,
+      "attention_only_decode_ceiling_tok_s": 40.298998854997734
+    },
+    {
+      "context_tokens": 8192,
+      "bf16_kv_gib": 1.125,
+      "process_medians_ms_per_layer": [
+        0.8837500063236803,
+        0.8020419918466359,
+        0.4597499791998416
+      ],
+      "median_ms_per_layer": 0.8020419918466359,
+      "attention_only_decode_ceiling_tok_s": 34.63381975028729
+    },
+    {
+      "context_tokens": 32768,
+      "bf16_kv_gib": 4.5,
+      "process_medians_ms_per_layer": [
+        1.3007920060772449,
+        1.2851250066887587,
+        1.2916660052724183
+      ],
+      "median_ms_per_layer": 1.2916660052724183,
+      "attention_only_decode_ceiling_tok_s": 21.50538735585854
+    },
+    {
+      "context_tokens": 65536,
+      "bf16_kv_gib": 9.0,
+      "process_medians_ms_per_layer": [
+        2.692332986043766,
+        2.4785830173641443,
+        2.5790000217966735
+      ],
+      "median_ms_per_layer": 2.5790000217966735,
+      "attention_only_decode_ceiling_tok_s": 10.770755154327702
+    },
+    {
+      "context_tokens": 131072,
+      "bf16_kv_gib": 18.0,
+      "process_medians_ms_per_layer": [
+        5.094292020658031,
+        5.3012080024927855,
+        5.006166989915073
+      ],
+      "median_ms_per_layer": 5.094292020658031,
+      "attention_only_decode_ceiling_tok_s": 5.4527258478970575
+    },
+    {
+      "context_tokens": 300000,
+      "bf16_kv_gib": 41.19873046875,
+      "process_medians_ms_per_layer": [
+        14.136915997369215,
+        12.292541010538116,
+        12.923583999508992
+      ],
+      "median_ms_per_layer": 12.923583999508992,
+      "attention_only_decode_ceiling_tok_s": 2.1493865617179524
+    }
+  ]
+}
